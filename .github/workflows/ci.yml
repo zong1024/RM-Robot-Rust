@@ -1,0 +1,27 @@
+name: Rust 固件持续集成
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  验证:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+          components: rustfmt, clippy
+
+      - name: 安装 ARM 工具
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+
+      - name: 执行完整检查
+        run: make check

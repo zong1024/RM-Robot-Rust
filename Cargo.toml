@@ -1,0 +1,25 @@
+[package]
+name = "rm_robot"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "面向 RoboMaster C 型开发板的全 Rust 整车控制固件"
+repository = "https://github.com/zong1024/RM-Robot-Rust"
+readme = "README.md"
+
+[dependencies]
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.5"
+panic-halt = "1.0.0"
+stm32f4xx-hal = { version = "0.22.1", features = ["stm32f407"] }
+libm = "0.2.15"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = true
+
+[profile.dev]
+opt-level = 1
+debug = true

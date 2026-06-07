@@ -1,0 +1,109 @@
+# RM 完整小车 Rust 固件
+
+面向 RoboMaster C 型开发板（STM32F407VGT6）的全 Rust `no_std` 整车框架。
+工程包含普通四轮底盘、双轴云台、FS-i6/FS-A8S 遥控、安全门、差速里程计，
+并为 IMU、世界坐标系和后续状态估计预留稳定接口。
+
+## 当前硬件定义
+
+### 底盘
+
+底盘使用四个 M3508 + C620，CAN1 速率 1 Mbps：
+
+| 机械位置 | 电机 ID | 反馈 ID | 控制帧位置 |
+| --- | ---: | ---: | ---: |
+| 左前 | 1 | `0x201` | `DATA[0..1]` |
+| 右前 | 2 | `0x202` | `DATA[2..3]` |
+| 左后 | 3 | `0x203` | `DATA[4..5]` |
+| 右后 | 4 | `0x204` | `DATA[6..7]` |
+
+四个电机由 `0x200` 群发控制。左右电机机械安装方向相反，默认方向配置为
+`[+1, -1, +1, -1]`，位于 `src/config.rs`。
+
+### 云台
+
+云台使用 CAN2，速率 1 Mbps：
+
+| 轴 | 电机 | 反馈 ID | 控制 ID | 电流限幅 |
+| --- | --- | ---: | ---: | ---: |
+| 偏航 | RoboMaster 6623 | `0x205` | `0x1FF` | `±5000` |
+| 俯仰 | GM6020 | `0x206` | `0x1FF` | `±20000` |
+
+6623 的反馈格式与 GM6020 不同：它不直接返回转速，框架使用 8192 线绝对编码器
+差分并低通滤波估算偏航速度。协议实现位于
+`src/domain/can_protocol.rs`。
+
+### 遥控器
+
+沿用已经实机验证的 FS-i6 + FS-A8S S.BUS：
+
+- USART3 RX：PC11
+- 100000 baud，8E2（STM32 配置为 9 位字长、偶校验、2 停止位）
+- 左摇杆竖直 CH3：底盘前后
+- 左摇杆水平 CH4：底盘转向
+- 右摇杆水平 CH1：云台偏航
+- 右摇杆竖直 CH2：云台俯仰
+- 三档 SwC CH5：高档立即锁车；中档且四个主摇杆居中 1 秒后解锁
+
+遥控失联、S.BUS failsafe 或帧超时 100 ms 会立即让全部控制电流归零。
+底盘或云台电机反馈超时也会使对应模块归零并清空 PID。
+
+## 软件架构
+
+```text
+platform/      STM32 寄存器、CAN 中断、S.BUS 中断
+domain/        电机反馈、CAN 协议、遥控数据、模块间命令
+control/       PID、差速底盘、6623/6020 级联云台
+estimation/    姿态接口、差速里程计、世界坐标位姿
+app/           整车 1 kHz 编排，不直接访问硬件
+main.rs        时钟、引脚、中断入口、RGB 和周期调度
+```
+
+控制路径不使用堆分配。中断只收发定长数据，所有 PID 和状态估计在固定 1 kHz
+主循环执行，便于测量最坏执行时间，也便于后续迁移到 RTIC 或 Embassy。
+
+详见 [架构说明](docs/ARCHITECTURE.md) 与
+[接线和调参](docs/HARDWARE_AND_TUNING.md)。
+
+## 构建
+
+```sh
+rustup target add thumbv7em-none-eabihf
+make check
+```
+
+烧录：
+
+```sh
+make flash
+```
+
+`make build` 特意从 `/tmp` 启动 Cargo，避免本仓库位于另一个 Rust 固件目录中时，
+父目录的 Cargo 配置被重复合并。独立 clone 后同样可用。
+
+GitHub Actions 会对每次推送执行格式检查、主机单元测试、Clippy 严格检查和
+Cortex-M4F 发布构建。
+
+## RGB 状态
+
+- 绿灯：500 ms 心跳，表示主循环运行。
+- 红灯：底盘或云台任一必需电机离线。
+- 蓝灯：遥控安全门已解锁。
+
+RGB 为低电平点亮：PH12 红、PH11 绿、PH10 蓝。
+
+## 首次装车必须确认
+
+1. 抬起车轮和云台，先在无负载状态测试。
+2. 检查四个底盘电机 ID 与机械位置。
+3. 检查 `CHASSIS_MOTOR_DIRECTION`，保证正向命令时四轮物理方向一致。
+4. 检查 6623 拨码为 Yaw（反馈 `0x205`），GM6020 为 ID 2（反馈 `0x206`）。
+5. 实测轮半径、轮距和减速比后更新 `src/config.rs`。
+6. 重新标定底盘和云台 PID；仓库内参数只是保守起点。
+7. 根据实际机械限位修改俯仰最小/最大角。
+
+## 参考资料
+
+- [DJI RoboMaster 6623 电调说明书](https://rm-static.djicdn.com/tem/1f53d24dad94e151687436607599258.pdf)
+- [DJI RoboMaster 6623 电机产品页](https://www.robomaster.com/zh-CN/products/components/detail/131)
+- 本机 `Development-Board-C-Examples/20.standard_robot` 官方示例
