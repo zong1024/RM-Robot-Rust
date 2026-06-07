@@ -8,7 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  验证:
+  verify:
+    name: 验证
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
