@@ -3,7 +3,8 @@
 use crate::{
     chassis::kinematics::wheel_mix,
     config::{
-        CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION, CONTROL_PERIOD_S,
+        CHASSIS_CURRENT_SLEW_PER_S, CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION,
+        CHASSIS_TARGET_RPM_SLEW_PER_S, CHASSIS_TOTAL_CURRENT_LIMIT, CONTROL_PERIOD_S,
         DEVICE_TIMEOUT_MS,
     },
     control::pid::{clamp, Pid},
@@ -25,6 +26,8 @@ pub struct ChassisOutput {
 
 pub struct ChassisController {
     speed_pid: [Pid; 4],
+    ramped_target_rpm: [f32; 4],
+    ramped_current: [f32; 4],
     last_wheel_mode: WheelMode,
 }
 
@@ -33,6 +36,8 @@ impl ChassisController {
         const PID: Pid = Pid::new(10.0, 0.6, 0.0, 4_000.0, CHASSIS_MAX_CURRENT);
         Self {
             speed_pid: [PID; 4],
+            ramped_target_rpm: [0.0; 4],
+            ramped_current: [0.0; 4],
             last_wheel_mode: WheelMode::Ordinary,
         }
     }
@@ -54,7 +59,7 @@ impl ChassisController {
                     mask
                 }
             });
-        let online = online_mask != 0;
+        let online = online_mask == 0b1111;
         if !enabled || !online {
             self.reset();
             return ChassisOutput {
@@ -85,20 +90,27 @@ impl ChassisController {
         };
 
         for index in 0..4 {
-            if online_mask & (1 << index) == 0 {
-                self.speed_pid[index].reset();
-                continue;
-            }
-            output.target_rpm[index] =
+            let requested_target =
                 wheel_target[index] * CHASSIS_MAX_RPM * CHASSIS_MOTOR_DIRECTION[index];
-            let current = self.speed_pid[index].step(
-                output.target_rpm[index],
+            self.ramped_target_rpm[index] = slew(
+                self.ramped_target_rpm[index],
+                requested_target,
+                CHASSIS_TARGET_RPM_SLEW_PER_S * CONTROL_PERIOD_S,
+            );
+            output.target_rpm[index] = self.ramped_target_rpm[index];
+            let requested_current = self.speed_pid[index].step(
+                self.ramped_target_rpm[index],
                 feedback[index].speed_rpm as f32,
                 CONTROL_PERIOD_S,
             );
-            output.current[index] =
-                clamp(current, -CHASSIS_MAX_CURRENT, CHASSIS_MAX_CURRENT) as i16;
+            self.ramped_current[index] = slew(
+                self.ramped_current[index],
+                clamp(requested_current, -CHASSIS_MAX_CURRENT, CHASSIS_MAX_CURRENT),
+                CHASSIS_CURRENT_SLEW_PER_S * CONTROL_PERIOD_S,
+            );
         }
+        apply_total_current_limit(&mut self.ramped_current);
+        output.current = core::array::from_fn(|index| self.ramped_current[index] as i16);
         output
     }
 
@@ -106,12 +118,28 @@ impl ChassisController {
         for pid in &mut self.speed_pid {
             pid.reset();
         }
+        self.ramped_target_rpm = [0.0; 4];
+        self.ramped_current = [0.0; 4];
     }
 }
 
 impl Default for ChassisController {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn slew(current: f32, target: f32, max_step: f32) -> f32 {
+    current + clamp(target - current, -max_step, max_step)
+}
+
+fn apply_total_current_limit(currents: &mut [f32; 4]) {
+    let total = currents.iter().map(|current| current.abs()).sum::<f32>();
+    if total > CHASSIS_TOTAL_CURRENT_LIMIT {
+        let scale = CHASSIS_TOTAL_CURRENT_LIMIT / total;
+        for current in currents {
+            *current *= scale;
+        }
     }
 }
 
@@ -161,41 +189,10 @@ mod tests {
     }
 
     #[test]
-    fn 任意单台电机在线时只驱动该电机() {
-        for active_index in 0..4 {
-            let mut controller = ChassisController::new();
-            let mut feedback = [MotorFeedback::default(); 4];
-            feedback[active_index] = fresh();
-            let output = controller.update(
-                ChassisCommand {
-                    forward: 0.5,
-                    ..ChassisCommand::default()
-                },
-                &feedback,
-                true,
-                10,
-            );
-            assert!(output.online);
-            assert_eq!(output.online_mask, 1 << active_index);
-            for index in 0..4 {
-                if index == active_index {
-                    assert_ne!(output.current[index], 0);
-                } else {
-                    assert_eq!(output.current[index], 0);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn 多台在线时分别驱动且离线槽位为零() {
+    fn 正式模式要求四台电机全部在线() {
         let mut controller = ChassisController::new();
-        let feedback = [
-            fresh(),
-            MotorFeedback::default(),
-            fresh(),
-            MotorFeedback::default(),
-        ];
+        let mut feedback = [fresh(); 4];
+        feedback[3] = MotorFeedback::default();
         let output = controller.update(
             ChassisCommand {
                 forward: 0.5,
@@ -205,18 +202,66 @@ mod tests {
             true,
             10,
         );
-        assert!(output.online);
-        assert_eq!(output.online_mask, 0b0101);
-        assert_ne!(output.current[0], 0);
-        assert_eq!(output.current[1], 0);
-        assert_ne!(output.current[2], 0);
-        assert_eq!(output.current[3], 0);
+        assert!(!output.online);
+        assert_eq!(output.online_mask, 0b0111);
+        assert_eq!(output.current, [0; 4]);
     }
 
     #[test]
-    fn 全部离线时底盘锁零() {
+    fn 四台在线时目标和电流逐周期缓升() {
         let mut controller = ChassisController::new();
-        let output = controller.update(
+        let feedback = [fresh(); 4];
+        let first = controller.update(
+            ChassisCommand {
+                forward: 1.0,
+                ..ChassisCommand::default()
+            },
+            &feedback,
+            true,
+            10,
+        );
+        let second = controller.update(
+            ChassisCommand {
+                forward: 1.0,
+                ..ChassisCommand::default()
+            },
+            &feedback,
+            true,
+            11,
+        );
+        assert!(first.online);
+        assert_eq!(first.online_mask, 0b1111);
+        assert_eq!(first.target_rpm, [2.0, -2.0, 2.0, -2.0]);
+        assert_eq!(first.current, [20, -20, 20, -20]);
+        assert_eq!(second.target_rpm, [4.0, -4.0, 4.0, -4.0]);
+        assert_eq!(second.current, [40, -40, 40, -40]);
+    }
+
+    #[test]
+    fn 总电流预算按比例限制四路输出() {
+        let mut currents = [6_000.0; 4];
+        apply_total_current_limit(&mut currents);
+        assert_eq!(currents, [3_000.0; 4]);
+        assert_eq!(
+            currents.iter().map(|current| current.abs()).sum::<f32>(),
+            CHASSIS_TOTAL_CURRENT_LIMIT
+        );
+    }
+
+    #[test]
+    fn 掉线后清零斜坡和pid() {
+        let mut controller = ChassisController::new();
+        let feedback = [fresh(); 4];
+        controller.update(
+            ChassisCommand {
+                forward: 1.0,
+                ..ChassisCommand::default()
+            },
+            &feedback,
+            true,
+            10,
+        );
+        let offline = controller.update(
             ChassisCommand {
                 forward: 1.0,
                 ..ChassisCommand::default()
@@ -225,8 +270,8 @@ mod tests {
             true,
             1000,
         );
-        assert!(!output.online);
-        assert_eq!(output.online_mask, 0);
-        assert_eq!(output.current, [0; 4]);
+        assert_eq!(offline.current, [0; 4]);
+        assert_eq!(controller.ramped_target_rpm, [0.0; 4]);
+        assert_eq!(controller.ramped_current, [0.0; 4]);
     }
 }

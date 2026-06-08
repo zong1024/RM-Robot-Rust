@@ -11,8 +11,10 @@
 - CAN2：偏航 RoboMaster 6623 (`0x205`)；俯仰 GM6020 (`0x206`)。
 - USART3 PC11：FS-i6 + FS-A8S S.BUS。
 
-底盘采用动态在线掩码：ID1～4 任意电机上电即可单独运行，离线槽位电流为零。
-`CHASSIS_MOTOR_ONLINE_MASK` 的 bit0～bit3 对应 ID1～ID4；全部离线才锁住底盘。
+正式底盘要求 ID1～4 全部在线。任一反馈超时会整体锁零并清 PID/软启动状态。
+功率保护参数：单路 `6000`、四路总预算 `12000`、目标转速斜坡
+`2000 RPM/s`、电流斜坡 `20000/s`。
+`CHASSIS_MOTOR_ONLINE_MASK` 的 bit0～bit3 对应 ID1～ID4。
 四电机 CAN 排查使用 `CAN1_ID_RX_COUNT`、`CAN1_ERROR_STATUS`、
 `CAN1_TX_ERROR_COUNT` 和 `CAN1_RX_ERROR_COUNT`。
 
