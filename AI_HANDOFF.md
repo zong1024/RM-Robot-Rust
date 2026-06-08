@@ -11,8 +11,8 @@
 - CAN2：偏航 RoboMaster 6623 (`0x205`)；俯仰 GM6020 (`0x206`)。
 - USART3 PC11：FS-i6 + FS-A8S S.BUS。
 
-当前实机只连接 M3508 ID2，因此 `CHASSIS_MOTOR_ENABLED` 暂时为
-`[false, true, false, false]`。整车接齐后必须改为 `[true; 4]`。
+底盘采用动态在线掩码：ID1～4 任意电机上电即可单独运行，离线槽位电流为零。
+`CHASSIS_MOTOR_ONLINE_MASK` 的 bit0～bit3 对应 ID1～ID4；全部离线才锁住底盘。
 
 ## 不可混淆的协议细节
 

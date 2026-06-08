@@ -26,6 +26,8 @@ pub static ROBOT_ARMED: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
 pub static CHASSIS_ONLINE: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
+pub static CHASSIS_MOTOR_ONLINE_MASK: AtomicU8 = AtomicU8::new(0);
+#[no_mangle]
 pub static GIMBAL_ONLINE: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
 pub static CHASSIS_WHEEL_MODE: AtomicU8 = AtomicU8::new(0);
@@ -116,6 +118,7 @@ fn main() -> ! {
 
         ROBOT_ARMED.store(output.armed as u8, Ordering::Relaxed);
         CHASSIS_ONLINE.store(output.chassis.online as u8, Ordering::Relaxed);
+        CHASSIS_MOTOR_ONLINE_MASK.store(output.chassis.online_mask, Ordering::Relaxed);
         GIMBAL_ONLINE.store(output.gimbal.online as u8, Ordering::Relaxed);
         CHASSIS_WHEEL_MODE.store(output.chassis.wheel_mode as u8, Ordering::Relaxed);
         SWB_CHANNEL_RAW.store(

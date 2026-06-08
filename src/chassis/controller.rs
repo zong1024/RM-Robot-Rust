@@ -3,8 +3,8 @@
 use crate::{
     chassis::kinematics::wheel_mix,
     config::{
-        CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION, CHASSIS_MOTOR_ENABLED,
-        CONTROL_PERIOD_S, DEVICE_TIMEOUT_MS,
+        CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION, CONTROL_PERIOD_S,
+        DEVICE_TIMEOUT_MS,
     },
     control::pid::{clamp, Pid},
     domain::{
@@ -18,6 +18,8 @@ pub struct ChassisOutput {
     pub target_rpm: [f32; 4],
     pub current: [i16; 4],
     pub online: bool,
+    /// bit0..bit3 分别表示 ID1..ID4 是否在线。
+    pub online_mask: u8,
     pub wheel_mode: WheelMode,
 }
 
@@ -42,13 +44,22 @@ impl ChassisController {
         enabled: bool,
         now_ms: u32,
     ) -> ChassisOutput {
-        let online = feedback.iter().enumerate().all(|(index, motor)| {
-            !CHASSIS_MOTOR_ENABLED[index] || motor.is_fresh(now_ms, DEVICE_TIMEOUT_MS)
-        });
+        let online_mask = feedback
+            .iter()
+            .enumerate()
+            .fold(0u8, |mask, (index, motor)| {
+                if motor.is_fresh(now_ms, DEVICE_TIMEOUT_MS) {
+                    mask | (1 << index)
+                } else {
+                    mask
+                }
+            });
+        let online = online_mask != 0;
         if !enabled || !online {
             self.reset();
             return ChassisOutput {
                 online,
+                online_mask,
                 wheel_mode: command.wheel_mode,
                 ..ChassisOutput::default()
             };
@@ -59,6 +70,7 @@ impl ChassisController {
             self.last_wheel_mode = command.wheel_mode;
             return ChassisOutput {
                 online: true,
+                online_mask,
                 wheel_mode: command.wheel_mode,
                 ..ChassisOutput::default()
             };
@@ -67,12 +79,13 @@ impl ChassisController {
         let wheel_target = wheel_mix(command);
         let mut output = ChassisOutput {
             online: true,
+            online_mask,
             wheel_mode: command.wheel_mode,
             ..ChassisOutput::default()
         };
 
         for index in 0..4 {
-            if !CHASSIS_MOTOR_ENABLED[index] {
+            if online_mask & (1 << index) == 0 {
                 self.speed_pid[index].reset();
                 continue;
             }
@@ -139,15 +152,50 @@ mod tests {
         assert_eq!(output.wheel_mode, WheelMode::Mecanum);
     }
 
-    #[test]
-    fn 台架模式只要求并驱动id2() {
-        let mut controller = ChassisController::new();
-        let mut feedback = [MotorFeedback::default(); 4];
-        feedback[1] = MotorFeedback {
+    fn fresh() -> MotorFeedback {
+        MotorFeedback {
             frame_count: 1,
             received_at_ms: 10,
             ..MotorFeedback::default()
-        };
+        }
+    }
+
+    #[test]
+    fn 任意单台电机在线时只驱动该电机() {
+        for active_index in 0..4 {
+            let mut controller = ChassisController::new();
+            let mut feedback = [MotorFeedback::default(); 4];
+            feedback[active_index] = fresh();
+            let output = controller.update(
+                ChassisCommand {
+                    forward: 0.5,
+                    ..ChassisCommand::default()
+                },
+                &feedback,
+                true,
+                10,
+            );
+            assert!(output.online);
+            assert_eq!(output.online_mask, 1 << active_index);
+            for index in 0..4 {
+                if index == active_index {
+                    assert_ne!(output.current[index], 0);
+                } else {
+                    assert_eq!(output.current[index], 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn 多台在线时分别驱动且离线槽位为零() {
+        let mut controller = ChassisController::new();
+        let feedback = [
+            fresh(),
+            MotorFeedback::default(),
+            fresh(),
+            MotorFeedback::default(),
+        ];
         let output = controller.update(
             ChassisCommand {
                 forward: 0.5,
@@ -158,9 +206,27 @@ mod tests {
             10,
         );
         assert!(output.online);
-        assert_eq!(output.current[0], 0);
-        assert_ne!(output.current[1], 0);
-        assert_eq!(output.current[2], 0);
+        assert_eq!(output.online_mask, 0b0101);
+        assert_ne!(output.current[0], 0);
+        assert_eq!(output.current[1], 0);
+        assert_ne!(output.current[2], 0);
         assert_eq!(output.current[3], 0);
+    }
+
+    #[test]
+    fn 全部离线时底盘锁零() {
+        let mut controller = ChassisController::new();
+        let output = controller.update(
+            ChassisCommand {
+                forward: 1.0,
+                ..ChassisCommand::default()
+            },
+            &[MotorFeedback::default(); 4],
+            true,
+            1000,
+        );
+        assert!(!output.online);
+        assert_eq!(output.online_mask, 0);
+        assert_eq!(output.current, [0; 4]);
     }
 }

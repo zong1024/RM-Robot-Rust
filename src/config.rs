@@ -15,8 +15,6 @@ pub const PITCH_6020_FEEDBACK_ID: u16 = 0x206;
 /// CAN 电流帧按电机 ID 1、2、3、4 排列。
 /// 实际机械位置为：左前 1、右前 2、左后 3、右后 4。
 pub const CHASSIS_MOTOR_DIRECTION: [f32; 4] = [1.0, -1.0, 1.0, -1.0];
-/// 当前台架只连接右前 ID2。整车四电机接齐后改为 `[true; 4]`。
-pub const CHASSIS_MOTOR_ENABLED: [bool; 4] = [false, true, false, false];
 pub const CHASSIS_MAX_RPM: f32 = 4500.0;
 pub const CHASSIS_MAX_CURRENT: f32 = 12_000.0;
 
