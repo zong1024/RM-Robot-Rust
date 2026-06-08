@@ -11,6 +11,9 @@
 - CAN2：偏航 RoboMaster 6623 (`0x205`)；俯仰 GM6020 (`0x206`)。
 - USART3 PC11：FS-i6 + FS-A8S S.BUS。
 
+当前实机只连接 M3508 ID2，因此 `CHASSIS_MOTOR_ENABLED` 暂时为
+`[false, true, false, false]`。整车接齐后必须改为 `[true; 4]`。
+
 ## 不可混淆的协议细节
 
 6623 与 GM6020 共用 `0x1FF` 控制帧，但反馈格式不同：

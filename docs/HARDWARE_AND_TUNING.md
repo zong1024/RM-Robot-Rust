@@ -9,6 +9,14 @@
 - 总线两端各一个 120 Ω 终端电阻。
 - 电机反馈 ID 必须依次为 `0x201`、`0x202`、`0x203`、`0x204`。
 
+当前仓库处于 ID2 单电机台架配置：
+
+```rust
+pub const CHASSIS_MOTOR_ENABLED: [bool; 4] = [false, true, false, false];
+```
+
+未启用电机不参与在线判断，并始终接收零电流。四台电机接齐后改为 `[true; 4]`。
+
 ### CAN2：云台
 
 - C 板 PB5/PB6。

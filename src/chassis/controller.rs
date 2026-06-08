@@ -3,8 +3,8 @@
 use crate::{
     chassis::kinematics::wheel_mix,
     config::{
-        CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION, CONTROL_PERIOD_S,
-        DEVICE_TIMEOUT_MS,
+        CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION, CHASSIS_MOTOR_ENABLED,
+        CONTROL_PERIOD_S, DEVICE_TIMEOUT_MS,
     },
     control::pid::{clamp, Pid},
     domain::{
@@ -42,9 +42,9 @@ impl ChassisController {
         enabled: bool,
         now_ms: u32,
     ) -> ChassisOutput {
-        let online = feedback
-            .iter()
-            .all(|motor| motor.is_fresh(now_ms, DEVICE_TIMEOUT_MS));
+        let online = feedback.iter().enumerate().all(|(index, motor)| {
+            !CHASSIS_MOTOR_ENABLED[index] || motor.is_fresh(now_ms, DEVICE_TIMEOUT_MS)
+        });
         if !enabled || !online {
             self.reset();
             return ChassisOutput {
@@ -72,6 +72,10 @@ impl ChassisController {
         };
 
         for index in 0..4 {
+            if !CHASSIS_MOTOR_ENABLED[index] {
+                self.speed_pid[index].reset();
+                continue;
+            }
             output.target_rpm[index] =
                 wheel_target[index] * CHASSIS_MAX_RPM * CHASSIS_MOTOR_DIRECTION[index];
             let current = self.speed_pid[index].step(
@@ -133,5 +137,30 @@ mod tests {
         );
         assert_eq!(output.current, [0; 4]);
         assert_eq!(output.wheel_mode, WheelMode::Mecanum);
+    }
+
+    #[test]
+    fn 台架模式只要求并驱动id2() {
+        let mut controller = ChassisController::new();
+        let mut feedback = [MotorFeedback::default(); 4];
+        feedback[1] = MotorFeedback {
+            frame_count: 1,
+            received_at_ms: 10,
+            ..MotorFeedback::default()
+        };
+        let output = controller.update(
+            ChassisCommand {
+                forward: 0.5,
+                ..ChassisCommand::default()
+            },
+            &feedback,
+            true,
+            10,
+        );
+        assert!(output.online);
+        assert_eq!(output.current[0], 0);
+        assert_ne!(output.current[1], 0);
+        assert_eq!(output.current[2], 0);
+        assert_eq!(output.current[3], 0);
     }
 }
