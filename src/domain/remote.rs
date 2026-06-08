@@ -1,8 +1,11 @@
 //! FS-i6 + FS-A8S 的 S.BUS 解码、通道映射和整车安全门。
 
 use crate::{
-    config::{ARM_HOLD_MS, REMOTE_CHANNEL_LIMIT, REMOTE_DEADZONE, REMOTE_TIMEOUT_MS},
-    domain::command::{ChassisCommand, GimbalCommand, RobotCommand},
+    config::{
+        ARM_HOLD_MS, REMOTE_CHANNEL_LIMIT, REMOTE_DEADZONE, REMOTE_SWA_CHANNEL_INDEX,
+        REMOTE_SWC_CHANNEL_INDEX, REMOTE_TIMEOUT_MS,
+    },
+    domain::command::{ChassisCommand, GimbalCommand, RobotCommand, WheelMode},
 };
 
 pub const FRAME_LENGTH: usize = 25;
@@ -19,6 +22,7 @@ pub enum Switch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RemoteData {
     pub channels: [i16; 16],
+    pub switch_a: Switch,
     pub switch_c: Switch,
     pub frame_lost: bool,
     pub failsafe: bool,
@@ -30,6 +34,7 @@ impl RemoteData {
     pub const fn new() -> Self {
         Self {
             channels: [0; 16],
+            switch_a: Switch::High,
             switch_c: Switch::High,
             frame_lost: false,
             failsafe: false,
@@ -94,7 +99,8 @@ impl SbusDecoder {
 
         Some(RemoteData {
             channels,
-            switch_c: decode_switch(channels[4]),
+            switch_a: decode_switch(channels[REMOTE_SWA_CHANNEL_INDEX]),
+            switch_c: decode_switch(channels[REMOTE_SWC_CHANNEL_INDEX]),
             frame_lost: self.frame[23] & (1 << 2) != 0,
             failsafe: self.frame[23] & (1 << 3) != 0,
             frame_count: self.frame_count,
@@ -147,6 +153,7 @@ impl RemoteController {
             clamp_stick(data.channels[3]),
         ];
         let sticks_centered = primary.iter().all(|value| *value == 0);
+        let wheel_mode = wheel_mode_from_switch(data.switch_a);
 
         if !online || data.switch_c == Switch::High {
             self.armed = false;
@@ -168,13 +175,30 @@ impl RemoteController {
 
         let enabled = online && self.armed;
         if !enabled {
-            return RobotCommand::default();
+            return RobotCommand {
+                chassis: ChassisCommand {
+                    wheel_mode,
+                    ..ChassisCommand::default()
+                },
+                ..RobotCommand::default()
+            };
         }
 
+        let left_horizontal = normalize(primary[3]);
         RobotCommand {
             chassis: ChassisCommand {
                 forward: normalize(primary[2]),
-                turn: normalize(primary[3]),
+                strafe: if wheel_mode == WheelMode::Mecanum {
+                    left_horizontal
+                } else {
+                    0.0
+                },
+                turn: if wheel_mode == WheelMode::Ordinary {
+                    left_horizontal
+                } else {
+                    0.0
+                },
+                wheel_mode,
             },
             gimbal: GimbalCommand {
                 yaw_rate: normalize(primary[0]),
@@ -233,9 +257,50 @@ fn normalize(value: i16) -> f32 {
     value as f32 / REMOTE_CHANNEL_LIMIT as f32
 }
 
+fn wheel_mode_from_switch(value: Switch) -> WheelMode {
+    if value == Switch::Low {
+        WheelMode::Mecanum
+    } else {
+        WheelMode::Ordinary
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode_frame(channels: [i16; 16]) -> [u8; FRAME_LENGTH] {
+        let mut frame = [0u8; FRAME_LENGTH];
+        frame[0] = 0x0f;
+        frame[24] = 0;
+        for (channel, value) in channels.iter().enumerate() {
+            let raw = (*value + CHANNEL_OFFSET) as u16 & 0x07ff;
+            let bit_offset = channel * 11;
+            for bit in 0..11 {
+                if raw & (1 << bit) != 0 {
+                    let frame_bit = bit_offset + bit;
+                    frame[1 + frame_bit / 8] |= 1 << (frame_bit % 8);
+                }
+            }
+        }
+        frame
+    }
+
+    #[test]
+    fn sbus从ch7解析swa并从ch5解析swc() {
+        let mut channels = [0; 16];
+        channels[REMOTE_SWA_CHANNEL_INDEX] = 783;
+        channels[REMOTE_SWC_CHANNEL_INDEX] = -784;
+        let frame = encode_frame(channels);
+        let mut decoder = SbusDecoder::new();
+        let mut decoded = None;
+        for byte in frame {
+            decoded = decoder.push(byte, 10).or(decoded);
+        }
+        let remote = decoded.unwrap();
+        assert_eq!(remote.switch_a, Switch::Low);
+        assert_eq!(remote.switch_c, Switch::High);
+    }
 
     #[test]
     fn 左摇杆控制底盘右摇杆控制云台() {
@@ -254,9 +319,44 @@ mod tests {
         remote.last_frame_ms += 1;
         let command = controller.update(&remote, ARM_HOLD_MS + 1);
         assert_eq!(command.chassis.forward, 1.0);
+        assert_eq!(command.chassis.strafe, 0.0);
         assert_eq!(command.chassis.turn, -1.0);
+        assert_eq!(command.chassis.wheel_mode, WheelMode::Ordinary);
         assert_eq!(command.gimbal.yaw_rate, 0.5);
         assert_eq!(command.gimbal.pitch_rate, 0.5);
+    }
+
+    #[test]
+    fn swa下档切换麦克纳姆横移模式() {
+        let mut controller = RemoteController::new();
+        let mut remote = RemoteData::new();
+        remote.frame_count = 1;
+        remote.switch_a = Switch::Low;
+        remote.switch_c = Switch::Middle;
+        controller.update(&remote, 0);
+        remote.last_frame_ms = ARM_HOLD_MS;
+        assert!(controller.update(&remote, ARM_HOLD_MS).enabled);
+
+        remote.channels[2] = 392;
+        remote.channels[3] = -784;
+        remote.last_frame_ms += 1;
+        let command = controller.update(&remote, ARM_HOLD_MS + 1);
+        assert_eq!(command.chassis.forward, 0.5);
+        assert_eq!(command.chassis.strafe, -1.0);
+        assert_eq!(command.chassis.turn, 0.0);
+        assert_eq!(command.chassis.wheel_mode, WheelMode::Mecanum);
+    }
+
+    #[test]
+    fn 锁定状态仍保留swa轮胎模式() {
+        let mut controller = RemoteController::new();
+        let mut remote = RemoteData::new();
+        remote.frame_count = 1;
+        remote.switch_a = Switch::Low;
+        remote.switch_c = Switch::High;
+        let command = controller.update(&remote, 0);
+        assert!(!command.enabled);
+        assert_eq!(command.chassis.wheel_mode, WheelMode::Mecanum);
     }
 
     #[test]

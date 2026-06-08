@@ -4,5 +4,7 @@
 //! 转向模式和底盘标定代码都应继续放在本目录中。
 
 mod controller;
+mod kinematics;
 
-pub use controller::{differential_mix, ChassisController, ChassisOutput};
+pub use controller::{ChassisController, ChassisOutput};
+pub use kinematics::wheel_mix;

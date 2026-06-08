@@ -1,13 +1,14 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU32, AtomicU8, Ordering};
 
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, exception};
 use panic_halt as _;
 use rm_robot::{
     app::robot::{RobotController, RobotSensors},
+    config::REMOTE_SWA_CHANNEL_INDEX,
     estimation::attitude::Attitude,
 };
 use stm32f4xx_hal::{
@@ -26,6 +27,10 @@ pub static ROBOT_ARMED: AtomicU8 = AtomicU8::new(0);
 pub static CHASSIS_ONLINE: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
 pub static GIMBAL_ONLINE: AtomicU8 = AtomicU8::new(0);
+#[no_mangle]
+pub static CHASSIS_WHEEL_MODE: AtomicU8 = AtomicU8::new(0);
+#[no_mangle]
+pub static SWA_CHANNEL_RAW: AtomicI16 = AtomicI16::new(0);
 #[no_mangle]
 pub static CONTROL_LOOP_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -112,6 +117,11 @@ fn main() -> ! {
         ROBOT_ARMED.store(output.armed as u8, Ordering::Relaxed);
         CHASSIS_ONLINE.store(output.chassis.online as u8, Ordering::Relaxed);
         GIMBAL_ONLINE.store(output.gimbal.online as u8, Ordering::Relaxed);
+        CHASSIS_WHEEL_MODE.store(output.chassis.wheel_mode as u8, Ordering::Relaxed);
+        SWA_CHANNEL_RAW.store(
+            sensors.remote.channels[REMOTE_SWA_CHANNEL_INDEX],
+            Ordering::Relaxed,
+        );
         CONTROL_LOOP_COUNT.fetch_add(1, Ordering::Relaxed);
 
         if now.wrapping_sub(last_green_toggle) >= 500 {

@@ -1,12 +1,16 @@
-//! 普通四轮差速底盘控制器。
+//! 四轮底盘速度控制器。
 
 use crate::{
+    chassis::kinematics::wheel_mix,
     config::{
         CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION, CONTROL_PERIOD_S,
         DEVICE_TIMEOUT_MS,
     },
     control::pid::{clamp, Pid},
-    domain::{command::ChassisCommand, motor::MotorFeedback},
+    domain::{
+        command::{ChassisCommand, WheelMode},
+        motor::MotorFeedback,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -14,10 +18,12 @@ pub struct ChassisOutput {
     pub target_rpm: [f32; 4],
     pub current: [i16; 4],
     pub online: bool,
+    pub wheel_mode: WheelMode,
 }
 
 pub struct ChassisController {
     speed_pid: [Pid; 4],
+    last_wheel_mode: WheelMode,
 }
 
 impl ChassisController {
@@ -25,6 +31,7 @@ impl ChassisController {
         const PID: Pid = Pid::new(10.0, 0.6, 0.0, 4_000.0, CHASSIS_MAX_CURRENT);
         Self {
             speed_pid: [PID; 4],
+            last_wheel_mode: WheelMode::Ordinary,
         }
     }
 
@@ -42,20 +49,31 @@ impl ChassisController {
             self.reset();
             return ChassisOutput {
                 online,
+                wheel_mode: command.wheel_mode,
                 ..ChassisOutput::default()
             };
         }
 
-        let (left, right) = differential_mix(command.forward, command.turn);
-        let side_target = [left, right, left, right];
+        if command.wheel_mode != self.last_wheel_mode {
+            self.reset();
+            self.last_wheel_mode = command.wheel_mode;
+            return ChassisOutput {
+                online: true,
+                wheel_mode: command.wheel_mode,
+                ..ChassisOutput::default()
+            };
+        }
+
+        let wheel_target = wheel_mix(command);
         let mut output = ChassisOutput {
             online: true,
+            wheel_mode: command.wheel_mode,
             ..ChassisOutput::default()
         };
 
         for index in 0..4 {
             output.target_rpm[index] =
-                side_target[index] * CHASSIS_MAX_RPM * CHASSIS_MOTOR_DIRECTION[index];
+                wheel_target[index] * CHASSIS_MAX_RPM * CHASSIS_MOTOR_DIRECTION[index];
             let current = self.speed_pid[index].step(
                 output.target_rpm[index],
                 feedback[index].speed_rpm as f32,
@@ -80,32 +98,40 @@ impl Default for ChassisController {
     }
 }
 
-pub fn differential_mix(forward: f32, turn: f32) -> (f32, f32) {
-    let mut left = forward + turn;
-    let mut right = forward - turn;
-    let peak = left.abs().max(right.abs()).max(1.0);
-    left /= peak;
-    right /= peak;
-    (left, right)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn 电机排列符合一二三四物理位置() {
-        let (left, right) = differential_mix(1.0, 0.0);
-        let side = [left, right, left, right];
+        let wheels = wheel_mix(ChassisCommand {
+            forward: 1.0,
+            ..ChassisCommand::default()
+        });
         let targets =
-            core::array::from_fn::<_, 4, _>(|index| side[index] * CHASSIS_MOTOR_DIRECTION[index]);
+            core::array::from_fn::<_, 4, _>(|index| wheels[index] * CHASSIS_MOTOR_DIRECTION[index]);
         assert_eq!(targets, [1.0, -1.0, 1.0, -1.0]);
     }
 
     #[test]
-    fn 混控会整体归一化而不是单边截断() {
-        let (left, right) = differential_mix(1.0, 1.0);
-        assert_eq!(left, 1.0);
-        assert_eq!(right, 0.0);
+    fn 切换轮胎模式时先输出一周期零电流() {
+        let mut controller = ChassisController::new();
+        let feedback = [MotorFeedback {
+            frame_count: 1,
+            received_at_ms: 10,
+            ..MotorFeedback::default()
+        }; 4];
+        let output = controller.update(
+            ChassisCommand {
+                forward: 1.0,
+                wheel_mode: WheelMode::Mecanum,
+                ..ChassisCommand::default()
+            },
+            &feedback,
+            true,
+            10,
+        );
+        assert_eq!(output.current, [0; 4]);
+        assert_eq!(output.wheel_mode, WheelMode::Mecanum);
     }
 }

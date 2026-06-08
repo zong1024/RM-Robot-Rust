@@ -21,6 +21,7 @@ pub const CHASSIS_MAX_CURRENT: f32 = 12_000.0;
 /// 轮径、减速比和轮距用于里程计，装车后应实测校准。
 pub const WHEEL_RADIUS_M: f32 = 0.076;
 pub const CHASSIS_TRACK_WIDTH_M: f32 = 0.42;
+pub const CHASSIS_WHEELBASE_M: f32 = 0.42;
 pub const M3508_GEAR_RATIO: f32 = 19.0;
 
 pub const YAW_MAX_RATE_RAD_S: f32 = 2.5;
@@ -37,3 +38,6 @@ pub const REMOTE_CHANNEL_LIMIT: i16 = 784;
 pub const REMOTE_DEADZONE: i16 = 30;
 pub const REMOTE_TIMEOUT_MS: u32 = 100;
 pub const ARM_HOLD_MS: u32 = 1000;
+/// FS-i6 辅助通道数组索引：CH7 为 SwA，CH5 为 SwC。
+pub const REMOTE_SWA_CHANNEL_INDEX: usize = 6;
+pub const REMOTE_SWC_CHANNEL_INDEX: usize = 4;

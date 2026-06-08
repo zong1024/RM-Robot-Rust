@@ -39,10 +39,15 @@ CAN2 中断   -> 6623/6020  -> MotorFeedback
 
 ### `chassis`
 
-- `controller.rs`：普通四轮差速混控和四个独立 M3508 速度环。
+- `kinematics.rs`：普通轮差速与麦克纳姆全向运动学。
+- `controller.rs`：轮型切换保护和四个独立 M3508 速度环。
 - `mod.rs`：底盘子系统的公开接口。
 
 未来的底盘运动学、跟随模式、功率限制和标定应继续放在本目录中。
+
+`WheelMode` 由遥控器 SwA 产生并随 `ChassisCommand` 传递。模式变化时控制器
+先清空四个 PID 并输出一周期零电流，然后才应用新运动学。普通轮模式使用
+前进/转向两个自由度；麦克纳姆模式使用前进/横移两个自由度，右摇杆仍完整保留给云台。
 
 ### `gimbal`
 
@@ -63,7 +68,7 @@ CAN2 中断   -> 6623/6020  -> MotorFeedback
 ### `estimation`
 
 - `attitude.rs` 定义 `AttitudeProvider`。后续 IMU 驱动只需实现该 trait。
-- `odometry.rs` 根据四轮转速计算车体速度和二维位姿。
+- `odometry.rs` 根据当前轮型和四轮转速计算前向、侧向、旋转速度及二维位姿。
 - 当外部姿态有效时，里程计使用外部 yaw；否则使用左右轮差速积分 yaw。
 
 未来可增加：

@@ -11,7 +11,7 @@ use crate::{
     },
     estimation::{
         attitude::Attitude,
-        odometry::{DifferentialOdometry, OdometryState},
+        odometry::{ChassisOdometry, OdometryState},
     },
     gimbal::{GimbalController, GimbalOutput},
 };
@@ -37,7 +37,7 @@ pub struct RobotController {
     remote: RemoteController,
     chassis: ChassisController,
     gimbal: GimbalController,
-    odometry: DifferentialOdometry,
+    odometry: ChassisOdometry,
 }
 
 impl RobotController {
@@ -46,7 +46,7 @@ impl RobotController {
             remote: RemoteController::new(),
             chassis: ChassisController::new(),
             gimbal: GimbalController::new(),
-            odometry: DifferentialOdometry::new(),
+            odometry: ChassisOdometry::new(),
         }
     }
 
@@ -63,9 +63,12 @@ impl RobotController {
             now_ms,
         );
         let external_yaw = sensors.attitude.valid.then_some(sensors.attitude.yaw_rad);
-        let odometry = self
-            .odometry
-            .update(&sensors.chassis, CONTROL_PERIOD_S, external_yaw);
+        let odometry = self.odometry.update(
+            &sensors.chassis,
+            command.chassis.wheel_mode,
+            CONTROL_PERIOD_S,
+            external_yaw,
+        );
 
         RobotOutput {
             chassis,
