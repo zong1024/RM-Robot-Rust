@@ -31,12 +31,20 @@
 
 ## 扩展路线
 
+目录边界：
+
+- 底盘专属功能放入 `src/chassis/`。
+- 云台专属功能放入 `src/gimbal/`。
+- `src/control/` 只放多个子系统共享的控制算法。
+- 不要把具体底盘或云台控制器重新放回 `src/control/`。
+
 接入 IMU 时：
 
 1. 在 `estimation/attitude.rs` 实现 `AttitudeProvider`。
 2. 在 `main.rs` 构造有效的 `Attitude`。
 3. 里程计会自动使用外部 yaw。
-4. 云台世界系控制应新增控制模式，不要把 IMU 读取塞进 `gimbal.rs`。
+4. 云台世界系控制应在 `src/gimbal/` 新增控制模式，不要把 IMU 读取塞进
+   `controller.rs`。
 
 增加视觉或导航时，向 `RobotSensors` 增加明确的数据类型，并在 `app` 层融合。
 不要让 UART/CAN 中断直接修改 PID 目标。

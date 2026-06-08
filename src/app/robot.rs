@@ -3,11 +3,8 @@
 //! 本层只组合纯逻辑模块，不直接读写寄存器，因此可以在电脑上单元测试。
 
 use crate::{
+    chassis::{ChassisController, ChassisOutput},
     config::CONTROL_PERIOD_S,
-    control::{
-        chassis::{ChassisController, ChassisOutput},
-        gimbal::{GimbalController, GimbalOutput},
-    },
     domain::{
         motor::MotorFeedback,
         remote::{RemoteController, RemoteData},
@@ -16,6 +13,7 @@ use crate::{
         attitude::Attitude,
         odometry::{DifferentialOdometry, OdometryState},
     },
+    gimbal::{GimbalController, GimbalOutput},
 };
 
 #[derive(Clone, Copy, Debug, Default)]

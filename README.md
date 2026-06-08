@@ -51,16 +51,23 @@
 ## 软件架构
 
 ```text
-platform/      STM32 寄存器、CAN 中断、S.BUS 中断
-domain/        电机反馈、CAN 协议、遥控数据、模块间命令
-control/       PID、差速底盘、6623/6020 级联云台
-estimation/    姿态接口、差速里程计、世界坐标位姿
-app/           整车 1 kHz 编排，不直接访问硬件
-main.rs        时钟、引脚、中断入口、RGB 和周期调度
+src/
+├── chassis/       底盘子系统：差速混控与四路 M3508 速度环
+├── gimbal/        云台子系统：6623/GM6020 级联控制
+├── control/       底盘与云台共享的 PID 等基础算法
+├── domain/        电机反馈、CAN 协议、遥控数据、模块间命令
+├── estimation/    姿态接口、差速里程计、世界坐标位姿
+├── app/           整车 1 kHz 编排，不直接访问硬件
+├── platform/      STM32 寄存器、CAN 中断、S.BUS 中断
+└── main.rs        时钟、引脚、中断入口、RGB 和周期调度
 ```
 
 控制路径不使用堆分配。中断只收发定长数据，所有 PID 和状态估计在固定 1 kHz
 主循环执行，便于测量最坏执行时间，也便于后续迁移到 RTIC 或 Embassy。
+
+底盘和云台是顶层独立子系统。以后增加底盘运动学、功率限制时放入
+`src/chassis/`；增加云台世界坐标模式、自动瞄准和标定时放入
+`src/gimbal/`。只有确实被多个子系统复用的算法才放入 `src/control/`。
 
 详见 [架构说明](docs/ARCHITECTURE.md) 与
 [接线和调参](docs/HARDWARE_AND_TUNING.md)。
