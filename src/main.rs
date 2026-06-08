@@ -8,7 +8,7 @@ use cortex_m_rt::{entry, exception};
 use panic_halt as _;
 use rm_robot::{
     app::robot::{RobotController, RobotSensors},
-    config::REMOTE_SWA_CHANNEL_INDEX,
+    config::REMOTE_SWB_CHANNEL_INDEX,
     estimation::attitude::Attitude,
 };
 use stm32f4xx_hal::{
@@ -30,7 +30,7 @@ pub static GIMBAL_ONLINE: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
 pub static CHASSIS_WHEEL_MODE: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
-pub static SWA_CHANNEL_RAW: AtomicI16 = AtomicI16::new(0);
+pub static SWB_CHANNEL_RAW: AtomicI16 = AtomicI16::new(0);
 #[no_mangle]
 pub static CONTROL_LOOP_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -118,8 +118,8 @@ fn main() -> ! {
         CHASSIS_ONLINE.store(output.chassis.online as u8, Ordering::Relaxed);
         GIMBAL_ONLINE.store(output.gimbal.online as u8, Ordering::Relaxed);
         CHASSIS_WHEEL_MODE.store(output.chassis.wheel_mode as u8, Ordering::Relaxed);
-        SWA_CHANNEL_RAW.store(
-            sensors.remote.channels[REMOTE_SWA_CHANNEL_INDEX],
+        SWB_CHANNEL_RAW.store(
+            sensors.remote.channels[REMOTE_SWB_CHANNEL_INDEX],
             Ordering::Relaxed,
         );
         CONTROL_LOOP_COUNT.fetch_add(1, Ordering::Relaxed);

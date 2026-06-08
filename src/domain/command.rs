@@ -18,7 +18,7 @@ pub struct ChassisCommand {
     pub strafe: f32,
     /// 归一化原地转向速度，范围 -1 到 1。
     pub turn: f32,
-    /// 当前安装的轮胎类型，由遥控器 SwA 选择。
+    /// 当前安装的轮胎类型，由遥控器 SwB 选择。
     pub wheel_mode: WheelMode,
 }
 
