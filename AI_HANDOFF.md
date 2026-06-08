@@ -13,6 +13,8 @@
 
 底盘采用动态在线掩码：ID1～4 任意电机上电即可单独运行，离线槽位电流为零。
 `CHASSIS_MOTOR_ONLINE_MASK` 的 bit0～bit3 对应 ID1～ID4；全部离线才锁住底盘。
+四电机 CAN 排查使用 `CAN1_ID_RX_COUNT`、`CAN1_ERROR_STATUS`、
+`CAN1_TX_ERROR_COUNT` 和 `CAN1_RX_ERROR_COUNT`。
 
 ## 不可混淆的协议细节
 

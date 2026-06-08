@@ -16,6 +16,17 @@
 - 四台全部离线时底盘整体锁零。
 - `CHASSIS_MOTOR_ONLINE_MASK` 的 bit0～bit3 对应 ID1～ID4。
 
+四台同时接入出现异常时，通过 SWD 查看：
+
+- `CAN1_ID_RX_COUNT[0..4]`：ID1～ID4 各自的反馈帧数。
+- `CAN1_ERROR_STATUS`：STM32 CAN1 的原始 ESR。
+- `CAN1_TX_ERROR_COUNT`：发送错误计数 TEC。
+- `CAN1_RX_ERROR_COUNT`：接收错误计数 REC。
+
+如果 `CAN1_RX_COUNT` 为零且 TEC 持续升高，问题位于 CAN 物理层或节点供电，
+不是电机在线策略。断电后测量 CAN_H 与 CAN_L：总线两端各一个 120 Ω 终端时，
+等效电阻应接近 60 Ω。逐台接入可定位反接、短路、额外终端或损坏线束。
+
 ### CAN2：云台
 
 - C 板 PB5/PB6。

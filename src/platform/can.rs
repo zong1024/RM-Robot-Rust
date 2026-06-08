@@ -2,7 +2,7 @@
 
 use core::{
     cell::RefCell,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU8, Ordering},
 };
 
 use cortex_m::interrupt::{free, Mutex};
@@ -57,11 +57,19 @@ static STATE: Mutex<RefCell<CanState>> = Mutex::new(RefCell::new(CanState::new()
 #[no_mangle]
 pub static CAN1_RX_COUNT: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
+pub static CAN1_ID_RX_COUNT: [AtomicU32; 4] = [const { AtomicU32::new(0) }; 4];
+#[no_mangle]
 pub static CAN2_RX_COUNT: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
 pub static CAN_TX_OK_COUNT: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
 pub static CAN_TX_BUSY_COUNT: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static CAN1_ERROR_STATUS: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static CAN1_TX_ERROR_COUNT: AtomicU8 = AtomicU8::new(0);
+#[no_mangle]
+pub static CAN1_RX_ERROR_COUNT: AtomicU8 = AtomicU8::new(0);
 
 pub fn init() {
     let can1 = unsafe { &*pac::CAN1::ptr() };
@@ -121,6 +129,13 @@ pub fn snapshot() -> CanSnapshot {
     free(|cs| STATE.borrow(cs).borrow().snapshot)
 }
 
+pub fn sample_diagnostics() {
+    let esr = unsafe { &*pac::CAN1::ptr() }.esr().read().bits();
+    CAN1_ERROR_STATUS.store(esr, Ordering::Relaxed);
+    CAN1_TX_ERROR_COUNT.store(((esr >> 16) & 0xff) as u8, Ordering::Relaxed);
+    CAN1_RX_ERROR_COUNT.store(((esr >> 24) & 0xff) as u8, Ordering::Relaxed);
+}
+
 pub fn send_chassis(currents: [i16; 4]) {
     send_group(1, CAN_CHASSIS_COMMAND_ID, currents);
 }
@@ -140,6 +155,7 @@ fn receive(bus: u8, id: u16, data: [u8; 8], now_ms: u32) {
         let mut state = STATE.borrow(cs).borrow_mut();
         if bus == 1 {
             if let Some(index) = CHASSIS_FEEDBACK_IDS.iter().position(|value| *value == id) {
+                CAN1_ID_RX_COUNT[index].fetch_add(1, Ordering::Relaxed);
                 update_standard_motor(&mut state.snapshot.chassis[index], data, now_ms);
             }
         } else if id == YAW_6623_FEEDBACK_ID {

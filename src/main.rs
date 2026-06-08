@@ -104,6 +104,7 @@ fn main() -> ! {
         }
         last_tick = now;
 
+        platform::can::sample_diagnostics();
         let can = platform::can::snapshot();
         let sensors = RobotSensors {
             remote: platform::sbus::snapshot(),
