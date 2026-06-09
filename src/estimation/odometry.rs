@@ -56,9 +56,18 @@ impl ChassisOdometry {
         &mut self,
         motors: &[MotorFeedback; 4],
         wheel_mode: WheelMode,
+        feedback_valid: bool,
         dt_s: f32,
         external_yaw_rad: Option<f32>,
     ) -> OdometryState {
+        if !feedback_valid {
+            if let Some(yaw) = external_yaw_rad {
+                self.state.pose.yaw_rad = yaw;
+            }
+            self.state.velocity = BodyVelocity::default();
+            return self.state;
+        }
+
         let wheel_speed = core::array::from_fn::<_, 4, _>(|index| {
             motors[index].speed_rpm as f32 * CHASSIS_MOTOR_DIRECTION[index] / M3508_GEAR_RATIO
                 * TWO_PI
@@ -134,7 +143,7 @@ mod tests {
     fn 四轮同向物理速度产生直线里程() {
         let mut odometry = ChassisOdometry::new();
         let motors = [motor(1000), motor(-1000), motor(1000), motor(-1000)];
-        let state = odometry.update(&motors, WheelMode::Ordinary, 1.0, Some(0.0));
+        let state = odometry.update(&motors, WheelMode::Ordinary, true, 1.0, Some(0.0));
         assert!(state.pose.x_m > 0.0);
         assert!(state.pose.y_m.abs() < 1e-6);
         assert!(state.velocity.lateral_m_s.abs() < 1e-6);
@@ -145,7 +154,7 @@ mod tests {
     fn 左右反向产生原地旋转() {
         let mut odometry = ChassisOdometry::new();
         let motors = [motor(-1000), motor(-1000), motor(-1000), motor(-1000)];
-        let state = odometry.update(&motors, WheelMode::Ordinary, 1.0, None);
+        let state = odometry.update(&motors, WheelMode::Ordinary, true, 1.0, None);
         assert!(state.pose.x_m.abs() < 1e-6);
         assert!(state.velocity.yaw_rad_s.abs() > 0.1);
     }
@@ -154,9 +163,21 @@ mod tests {
     fn 麦克纳姆轮横移会产生侧向里程() {
         let mut odometry = ChassisOdometry::new();
         let motors = [motor(1000), motor(1000), motor(-1000), motor(-1000)];
-        let state = odometry.update(&motors, WheelMode::Mecanum, 1.0, Some(0.0));
+        let state = odometry.update(&motors, WheelMode::Mecanum, true, 1.0, Some(0.0));
         assert!(state.velocity.forward_m_s.abs() < 1e-6);
         assert!(state.velocity.lateral_m_s > 0.0);
         assert!(state.pose.y_m < 0.0);
+    }
+
+    #[test]
+    fn 底盘反馈失联时停止积分但接受外部航向() {
+        let mut odometry = ChassisOdometry::new();
+        let motors = [motor(1000), motor(-1000), motor(1000), motor(-1000)];
+        let moving = odometry.update(&motors, WheelMode::Ordinary, true, 1.0, Some(0.0));
+        let stopped = odometry.update(&motors, WheelMode::Ordinary, false, 1.0, Some(1.0));
+        assert_eq!(stopped.pose.x_m, moving.pose.x_m);
+        assert_eq!(stopped.pose.y_m, moving.pose.y_m);
+        assert_eq!(stopped.pose.yaw_rad, 1.0);
+        assert_eq!(stopped.velocity, BodyVelocity::default());
     }
 }

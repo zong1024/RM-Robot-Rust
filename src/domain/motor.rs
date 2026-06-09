@@ -55,6 +55,13 @@ impl EncoderTracker {
         self.last_raw = raw;
     }
 
+    /// 重新建立原始编码器基准，不把离线期间的位置变化误算成速度。
+    pub fn resynchronize(&mut self, raw: u16) {
+        self.initialized = true;
+        self.last_raw = raw;
+        self.speed_rad_s = 0.0;
+    }
+
     pub fn angle_rad(&self) -> f32 {
         self.total_counts as f32 * TWO_PI / ENCODER_COUNTS_PER_REV
     }
@@ -86,5 +93,18 @@ mod tests {
         assert_eq!(tracker.total_counts, 24);
         tracker.update(8180);
         assert_eq!(tracker.total_counts, 0);
+    }
+
+    #[test]
+    fn 重同步不会制造速度尖峰或破坏累计角度() {
+        let mut tracker = EncoderTracker::new();
+        tracker.update(1000);
+        tracker.update(1100);
+        let angle_before = tracker.angle_rad();
+        tracker.resynchronize(5000);
+        assert_eq!(tracker.angle_rad(), angle_before);
+        assert_eq!(tracker.speed_rad_s(), 0.0);
+        tracker.update(5010);
+        assert!(tracker.angle_rad() > angle_before);
     }
 }

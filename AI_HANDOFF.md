@@ -3,6 +3,7 @@
 ## 工程定位
 
 这是 `RM-Robot-Rust` 完整小车固件，不是单电机测试工程。
+基础功能完成范围以 `docs/BASELINE_STATUS.md` 为准。
 
 硬件：
 
@@ -51,6 +52,7 @@
 
 - 底盘专属功能放入 `src/chassis/`，两种轮型运动学位于 `kinematics.rs`。
 - 云台专属功能放入 `src/gimbal/`。
+- 配置按子系统放入 `src/config/`，调用方继续从 `crate::config` 导入。
 - `src/control/` 只放多个子系统共享的控制算法。
 - 不要把具体底盘或云台控制器重新放回 `src/control/`。
 
@@ -68,8 +70,7 @@
 ## 验证
 
 ```sh
-make test
-make build
+make check
 arm-none-eabi-size target/thumbv7em-none-eabihf/release/rm_robot
 arm-none-eabi-readelf -h target/thumbv7em-none-eabihf/release/rm_robot
 ```

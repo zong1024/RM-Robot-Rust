@@ -36,6 +36,7 @@ pub struct GimbalController {
     filtered_yaw_speed: f32,
     last_yaw_frame_count: u32,
     last_pitch_frame_count: u32,
+    was_online: bool,
     was_enabled: bool,
 }
 
@@ -54,6 +55,7 @@ impl GimbalController {
             filtered_yaw_speed: 0.0,
             last_yaw_frame_count: 0,
             last_pitch_frame_count: 0,
+            was_online: false,
             was_enabled: false,
         }
     }
@@ -66,23 +68,33 @@ impl GimbalController {
         enabled: bool,
         now_ms: u32,
     ) -> GimbalOutput {
-        if yaw.frame_count != self.last_yaw_frame_count {
+        let online =
+            yaw.is_fresh(now_ms, DEVICE_TIMEOUT_MS) && pitch.is_fresh(now_ms, DEVICE_TIMEOUT_MS);
+
+        if online && !self.was_online {
+            self.yaw_encoder.resynchronize(yaw.encoder);
+            self.pitch_encoder.resynchronize(pitch.encoder);
+            self.filtered_yaw_speed = 0.0;
+            self.last_yaw_frame_count = yaw.frame_count;
+            self.last_pitch_frame_count = pitch.frame_count;
+            self.was_online = true;
+        } else if online && yaw.frame_count != self.last_yaw_frame_count {
             self.last_yaw_frame_count = yaw.frame_count;
             self.yaw_encoder.update(yaw.encoder);
             self.filtered_yaw_speed =
                 self.filtered_yaw_speed * 0.85 + self.yaw_encoder.speed_rad_s() * 0.15;
         }
-        if pitch.frame_count != self.last_pitch_frame_count {
+        if online && pitch.frame_count != self.last_pitch_frame_count {
             self.last_pitch_frame_count = pitch.frame_count;
             self.pitch_encoder.update(pitch.encoder);
         }
 
         let yaw_angle = self.yaw_encoder.angle_rad();
         let pitch_angle = self.pitch_encoder.angle_rad();
-        let online =
-            yaw.is_fresh(now_ms, DEVICE_TIMEOUT_MS) && pitch.is_fresh(now_ms, DEVICE_TIMEOUT_MS);
-
         if !enabled || !online {
+            if !online {
+                self.was_online = false;
+            }
             self.reset_control(yaw_angle, pitch_angle);
             return GimbalOutput {
                 yaw_target_rad: self.yaw_target_rad,
@@ -201,6 +213,44 @@ mod tests {
             MotorFeedback::default(),
             true,
             1000,
+        );
+        assert_eq!(output.yaw_current, 0);
+        assert_eq!(output.pitch_current, 0);
+    }
+
+    #[test]
+    fn 失联后编码器跳变重连不会产生电流尖峰() {
+        let mut controller = GimbalController::new();
+        let yaw = fresh(1000);
+        let pitch = fresh(1000);
+        controller.update(GimbalCommand::default(), yaw, pitch, true, 10);
+
+        controller.update(
+            GimbalCommand::default(),
+            MotorFeedback::default(),
+            MotorFeedback::default(),
+            true,
+            1000,
+        );
+
+        let reconnected_yaw = MotorFeedback {
+            encoder: 5000,
+            frame_count: 2,
+            received_at_ms: 1001,
+            ..MotorFeedback::default()
+        };
+        let reconnected_pitch = MotorFeedback {
+            encoder: 3000,
+            frame_count: 2,
+            received_at_ms: 1001,
+            ..MotorFeedback::default()
+        };
+        let output = controller.update(
+            GimbalCommand::default(),
+            reconnected_yaw,
+            reconnected_pitch,
+            true,
+            1001,
         );
         assert_eq!(output.yaw_current, 0);
         assert_eq!(output.pitch_current, 0);
