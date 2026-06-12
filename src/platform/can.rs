@@ -12,13 +12,16 @@ use rm_robot::{
         PITCH_6020_FEEDBACK_ID, YAW_6623_FEEDBACK_ID,
     },
     domain::{
-        can_protocol::{decode_6623, decode_standard_motor, encode_current_group},
+        can_protocol::{
+            decode_6623, decode_standard_motor, encode_current_group, is_expected_motor_frame,
+        },
         motor::MotorFeedback,
     },
 };
 use stm32f4xx_hal::pac;
 
 const CAN_BTR_1M_AT_42M: u32 = 0x0029_0002;
+const RX_IRQ_FRAME_BUDGET: usize = 8;
 
 #[derive(Clone, Copy, Default)]
 pub struct CanSnapshot {
@@ -70,6 +73,10 @@ pub static CAN1_ERROR_STATUS: AtomicU32 = AtomicU32::new(0);
 pub static CAN1_TX_ERROR_COUNT: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
 pub static CAN1_RX_ERROR_COUNT: AtomicU8 = AtomicU8::new(0);
+#[no_mangle]
+pub static CAN_INVALID_FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static CAN_RX_BUDGET_EXHAUSTED_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() {
     let can1 = unsafe { &*pac::CAN1::ptr() };
@@ -83,8 +90,9 @@ pub fn init() {
 
     // CAN1 与 CAN2 共用过滤器，14 号过滤器起归 CAN2。
     can1.fmr().write(|w| unsafe { w.bits((14 << 8) | 1) });
-    configure_accept_all_filter(can1, 0);
-    configure_accept_all_filter(can1, 14);
+    configure_id_list_filter(can1, 0, CHASSIS_FEEDBACK_IDS[0], CHASSIS_FEEDBACK_IDS[1]);
+    configure_id_list_filter(can1, 1, CHASSIS_FEEDBACK_IDS[2], CHASSIS_FEEDBACK_IDS[3]);
+    configure_id_list_filter(can1, 14, YAW_6623_FEEDBACK_ID, PITCH_6020_FEEDBACK_ID);
     can1.fmr().modify(|r, w| unsafe { w.bits(r.bits() & !1) });
 
     can1.ier().modify(|_, w| w.fmpie0().set_bit());
@@ -104,12 +112,17 @@ pub fn irq(bus: u8) {
         unsafe { &*pac::CAN2::ptr() }
     };
 
-    while can.rf0r().read().fmp().bits() > 0 {
+    let mut processed = 0;
+    while can.rf0r().read().fmp().bits() > 0 && processed < RX_IRQ_FRAME_BUDGET {
         let rx = can.rx(0);
         let rir = rx.rir().read().bits();
+        let rdtr = rx.rdtr().read().bits();
         let low = rx.rdlr().read().bits();
         let high = rx.rdhr().read().bits();
-        let id = (rir >> 21) as u16;
+        let id = ((rir >> 21) & 0x7ff) as u16;
+        let extended = rir & (1 << 2) != 0;
+        let remote = rir & (1 << 1) != 0;
+        let dlc = (rdtr & 0x0f) as u8;
         let data = [
             low as u8,
             (low >> 8) as u8,
@@ -120,8 +133,16 @@ pub fn irq(bus: u8) {
             (high >> 16) as u8,
             (high >> 24) as u8,
         ];
-        receive(bus, id, data, crate::now_ms());
+        if is_expected_motor_frame(bus, id, extended, remote, dlc) {
+            receive(bus, id, data, crate::now_ms());
+        } else {
+            CAN_INVALID_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
         can.rf0r().modify(|_, w| w.rfom().set_bit());
+        processed += 1;
+    }
+    if can.rf0r().read().fmp().bits() > 0 {
+        CAN_RX_BUDGET_EXHAUSTED_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -191,17 +212,20 @@ fn init_one(can: &pac::can1::RegisterBlock) {
     can.btr().write(|w| unsafe { w.bits(CAN_BTR_1M_AT_42M) });
 }
 
-fn configure_accept_all_filter(can1: &pac::can1::RegisterBlock, bank: usize) {
+fn configure_id_list_filter(can1: &pac::can1::RegisterBlock, bank: usize, id_a: u16, id_b: u16) {
     let bit = 1u32 << bank;
     can1.fa1r()
         .modify(|r, w| unsafe { w.bits(r.bits() & !bit) });
-    can1.fm1r()
-        .modify(|r, w| unsafe { w.bits(r.bits() & !bit) });
+    can1.fm1r().modify(|r, w| unsafe { w.bits(r.bits() | bit) });
     can1.fs1r().modify(|r, w| unsafe { w.bits(r.bits() | bit) });
     can1.ffa1r()
         .modify(|r, w| unsafe { w.bits(r.bits() & !bit) });
-    can1.fb(bank).fr1().write(|w| unsafe { w.bits(0) });
-    can1.fb(bank).fr2().write(|w| unsafe { w.bits(0) });
+    can1.fb(bank)
+        .fr1()
+        .write(|w| unsafe { w.bits((id_a as u32) << 21) });
+    can1.fb(bank)
+        .fr2()
+        .write(|w| unsafe { w.bits((id_b as u32) << 21) });
     can1.fa1r().modify(|r, w| unsafe { w.bits(r.bits() | bit) });
 }
 

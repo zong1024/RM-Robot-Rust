@@ -100,8 +100,9 @@ impl ChassisOdometry {
             self.state.pose.yaw_rad += yaw_rate * dt_s;
         }
         let yaw = self.state.pose.yaw_rad;
-        self.state.pose.x_m += (forward * libm::cosf(yaw) + lateral * libm::sinf(yaw)) * dt_s;
-        self.state.pose.y_m += (forward * libm::sinf(yaw) - lateral * libm::cosf(yaw)) * dt_s;
+        let (sin_yaw, cos_yaw) = libm::sincosf(yaw);
+        self.state.pose.x_m += (forward * cos_yaw + lateral * sin_yaw) * dt_s;
+        self.state.pose.y_m += (forward * sin_yaw - lateral * cos_yaw) * dt_s;
         self.state.velocity = BodyVelocity {
             forward_m_s: forward,
             lateral_m_s: lateral,

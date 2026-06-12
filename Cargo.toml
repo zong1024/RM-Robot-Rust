@@ -6,6 +6,7 @@ publish = false
 description = "面向 RoboMaster C 型开发板的全 Rust 整车控制固件"
 repository = "https://github.com/zong1024/RM-Robot-Rust"
 readme = "README.md"
+license = "MIT"
 
 [dependencies]
 cortex-m = "0.7.7"

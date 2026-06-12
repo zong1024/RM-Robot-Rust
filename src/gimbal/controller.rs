@@ -2,9 +2,9 @@
 
 use crate::{
     config::{
-        CONTROL_PERIOD_S, DEVICE_TIMEOUT_MS, PITCH_6020_MAX_CURRENT, PITCH_MAX_ANGLE_RAD,
-        PITCH_MAX_RATE_RAD_S, PITCH_MIN_ANGLE_RAD, TWO_PI, YAW_6623_MAX_CURRENT,
-        YAW_MAX_RATE_RAD_S,
+        GimbalCalibration, ENCODER_COUNTS_PER_REV, GIMBAL_CALIBRATION, MOTOR_FEEDBACK_TIMEOUT_MS,
+        PITCH_6020_MAX_CURRENT, PITCH_MAX_ANGLE_RAD, PITCH_MAX_RATE_RAD_S, PITCH_MIN_ANGLE_RAD,
+        TWO_PI, YAW_6623_MAX_CURRENT, YAW_MAX_RATE_RAD_S,
     },
     control::pid::{clamp, Pid},
     domain::{
@@ -22,11 +22,11 @@ pub struct GimbalOutput {
     pub yaw_angle_rad: f32,
     pub pitch_angle_rad: f32,
     pub online: bool,
+    pub calibrated: bool,
 }
 
 pub struct GimbalController {
     yaw_encoder: EncoderTracker,
-    pitch_encoder: EncoderTracker,
     yaw_angle_pid: Pid,
     yaw_speed_pid: Pid,
     pitch_angle_pid: Pid,
@@ -38,13 +38,17 @@ pub struct GimbalController {
     last_pitch_frame_count: u32,
     was_online: bool,
     was_enabled: bool,
+    calibration: GimbalCalibration,
 }
 
 impl GimbalController {
     pub const fn new() -> Self {
+        Self::with_calibration(GIMBAL_CALIBRATION)
+    }
+
+    pub const fn with_calibration(calibration: GimbalCalibration) -> Self {
         Self {
             yaw_encoder: EncoderTracker::new(),
-            pitch_encoder: EncoderTracker::new(),
             // 位置环输出角速度，速度环输出电流。
             yaw_angle_pid: Pid::new(8.0, 0.0, 0.05, 0.0, 8.0),
             yaw_speed_pid: Pid::new(800.0, 40.0, 0.0, 20.0, YAW_6623_MAX_CURRENT),
@@ -57,6 +61,7 @@ impl GimbalController {
             last_pitch_frame_count: 0,
             was_online: false,
             was_enabled: false,
+            calibration,
         }
     }
 
@@ -67,31 +72,36 @@ impl GimbalController {
         pitch: MotorFeedback,
         enabled: bool,
         now_ms: u32,
+        dt_s: f32,
     ) -> GimbalOutput {
-        let online =
-            yaw.is_fresh(now_ms, DEVICE_TIMEOUT_MS) && pitch.is_fresh(now_ms, DEVICE_TIMEOUT_MS);
+        let online = yaw.is_fresh(now_ms, MOTOR_FEEDBACK_TIMEOUT_MS)
+            && pitch.is_fresh(now_ms, MOTOR_FEEDBACK_TIMEOUT_MS);
 
         if online && !self.was_online {
-            self.yaw_encoder.resynchronize(yaw.encoder);
-            self.pitch_encoder.resynchronize(pitch.encoder);
+            self.yaw_encoder
+                .resynchronize_timed(yaw.encoder, yaw.received_at_ms);
             self.filtered_yaw_speed = 0.0;
             self.last_yaw_frame_count = yaw.frame_count;
             self.last_pitch_frame_count = pitch.frame_count;
             self.was_online = true;
         } else if online && yaw.frame_count != self.last_yaw_frame_count {
             self.last_yaw_frame_count = yaw.frame_count;
-            self.yaw_encoder.update(yaw.encoder);
+            self.yaw_encoder
+                .update_timed(yaw.encoder, yaw.received_at_ms);
             self.filtered_yaw_speed =
                 self.filtered_yaw_speed * 0.85 + self.yaw_encoder.speed_rad_s() * 0.15;
         }
         if online && pitch.frame_count != self.last_pitch_frame_count {
             self.last_pitch_frame_count = pitch.frame_count;
-            self.pitch_encoder.update(pitch.encoder);
         }
 
         let yaw_angle = self.yaw_encoder.angle_rad();
-        let pitch_angle = self.pitch_encoder.angle_rad();
-        if !enabled || !online {
+        let pitch_angle = absolute_encoder_angle(
+            pitch.encoder,
+            self.calibration.pitch_encoder_zero,
+            self.calibration.pitch_encoder_direction,
+        );
+        if !enabled || !online || !self.calibration.calibrated {
             if !online {
                 self.was_online = false;
             }
@@ -102,6 +112,7 @@ impl GimbalController {
                 yaw_angle_rad: yaw_angle,
                 pitch_angle_rad: pitch_angle,
                 online,
+                calibrated: self.calibration.calibrated,
                 ..GimbalOutput::default()
             };
         }
@@ -112,27 +123,27 @@ impl GimbalController {
             self.was_enabled = true;
         }
 
-        self.yaw_target_rad += command.yaw_rate * YAW_MAX_RATE_RAD_S * CONTROL_PERIOD_S;
+        self.yaw_target_rad += command.yaw_rate * YAW_MAX_RATE_RAD_S * dt_s;
         self.pitch_target_rad = clamp(
-            self.pitch_target_rad + command.pitch_rate * PITCH_MAX_RATE_RAD_S * CONTROL_PERIOD_S,
+            self.pitch_target_rad + command.pitch_rate * PITCH_MAX_RATE_RAD_S * dt_s,
             PITCH_MIN_ANGLE_RAD,
             PITCH_MAX_ANGLE_RAD,
         );
 
-        let yaw_speed_target =
-            self.yaw_angle_pid
-                .step(self.yaw_target_rad, yaw_angle, CONTROL_PERIOD_S);
+        let yaw_speed_target = self
+            .yaw_angle_pid
+            .step(self.yaw_target_rad, yaw_angle, dt_s);
         let pitch_speed_target =
             self.pitch_angle_pid
-                .step(self.pitch_target_rad, pitch_angle, CONTROL_PERIOD_S);
+                .step(self.pitch_target_rad, pitch_angle, dt_s);
         let pitch_speed_rad_s = pitch.speed_rpm as f32 * TWO_PI / 60.0;
 
-        let yaw_current =
-            self.yaw_speed_pid
-                .step(yaw_speed_target, self.filtered_yaw_speed, CONTROL_PERIOD_S);
-        let pitch_current =
-            self.pitch_speed_pid
-                .step(pitch_speed_target, pitch_speed_rad_s, CONTROL_PERIOD_S);
+        let yaw_current = self
+            .yaw_speed_pid
+            .step(yaw_speed_target, self.filtered_yaw_speed, dt_s);
+        let pitch_current = self
+            .pitch_speed_pid
+            .step(pitch_speed_target, pitch_speed_rad_s, dt_s);
 
         GimbalOutput {
             yaw_current: clamp(yaw_current, -YAW_6623_MAX_CURRENT, YAW_6623_MAX_CURRENT) as i16,
@@ -146,6 +157,7 @@ impl GimbalController {
             yaw_angle_rad: yaw_angle,
             pitch_angle_rad: pitch_angle,
             online: true,
+            calibrated: self.calibration.calibrated,
         }
     }
 
@@ -170,6 +182,14 @@ impl Default for GimbalController {
 mod tests {
     use super::*;
 
+    fn calibrated_controller() -> GimbalController {
+        GimbalController::with_calibration(GimbalCalibration {
+            calibrated: true,
+            pitch_encoder_zero: 1000,
+            pitch_encoder_direction: 1.0,
+        })
+    }
+
     fn fresh(encoder: u16) -> MotorFeedback {
         MotorFeedback {
             encoder,
@@ -181,10 +201,10 @@ mod tests {
 
     #[test]
     fn 俯仰目标不会越过机械限位() {
-        let mut controller = GimbalController::new();
+        let mut controller = calibrated_controller();
         let yaw = fresh(1000);
         let pitch = fresh(1000);
-        controller.update(GimbalCommand::default(), yaw, pitch, true, 10);
+        controller.update(GimbalCommand::default(), yaw, pitch, true, 10, 0.001);
         let mut output = GimbalOutput::default();
         for _ in 0..10_000 {
             output = controller.update(
@@ -196,6 +216,7 @@ mod tests {
                 pitch,
                 true,
                 10,
+                0.001,
             );
         }
         assert_eq!(output.pitch_target_rad, PITCH_MAX_ANGLE_RAD);
@@ -213,6 +234,7 @@ mod tests {
             MotorFeedback::default(),
             true,
             1000,
+            0.001,
         );
         assert_eq!(output.yaw_current, 0);
         assert_eq!(output.pitch_current, 0);
@@ -223,7 +245,7 @@ mod tests {
         let mut controller = GimbalController::new();
         let yaw = fresh(1000);
         let pitch = fresh(1000);
-        controller.update(GimbalCommand::default(), yaw, pitch, true, 10);
+        controller.update(GimbalCommand::default(), yaw, pitch, true, 10, 0.001);
 
         controller.update(
             GimbalCommand::default(),
@@ -231,6 +253,7 @@ mod tests {
             MotorFeedback::default(),
             true,
             1000,
+            0.001,
         );
 
         let reconnected_yaw = MotorFeedback {
@@ -251,8 +274,52 @@ mod tests {
             reconnected_pitch,
             true,
             1001,
+            0.001,
         );
         assert_eq!(output.yaw_current, 0);
         assert_eq!(output.pitch_current, 0);
     }
+
+    #[test]
+    fn 未标定时云台始终锁零() {
+        let mut controller = GimbalController::new();
+        let mut yaw = fresh(1000);
+        let mut pitch = fresh(1000);
+        controller.update(GimbalCommand::default(), yaw, pitch, true, 10, 0.001);
+        yaw.frame_count += 1;
+        yaw.received_at_ms = 11;
+        pitch.frame_count += 1;
+        pitch.received_at_ms = 11;
+        let output = controller.update(
+            GimbalCommand {
+                yaw_rate: 1.0,
+                pitch_rate: 1.0,
+            },
+            yaw,
+            pitch,
+            true,
+            11,
+            0.001,
+        );
+        assert!(!output.calibrated);
+        assert_eq!(output.yaw_current, 0);
+        assert_eq!(output.pitch_current, 0);
+    }
+
+    #[test]
+    fn 俯仰绝对角度由机械零点和方向决定() {
+        assert!(
+            (absolute_encoder_angle(3072, 2048, -1.0) + core::f32::consts::FRAC_PI_4).abs() < 1e-6
+        );
+    }
+}
+
+fn absolute_encoder_angle(raw: u16, zero: u16, direction: f32) -> f32 {
+    let mut delta = raw as i32 - zero as i32;
+    if delta > 4096 {
+        delta -= 8192;
+    } else if delta < -4096 {
+        delta += 8192;
+    }
+    delta as f32 * TWO_PI / ENCODER_COUNTS_PER_REV * direction
 }

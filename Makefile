@@ -5,7 +5,7 @@ ELF := target/$(TARGET)/$(PROFILE)/rm_robot
 BIN := target/$(TARGET)/$(PROFILE)/rm_robot.bin
 CARGO := $(HOME)/.cargo/bin/cargo
 
-.PHONY: all fmt test clippy check build size flash clean
+.PHONY: all fmt test clippy clippy-arm check build size flash clean
 
 all: build
 
@@ -18,7 +18,10 @@ test:
 clippy:
 	$(CARGO) clippy --target x86_64-unknown-linux-gnu --lib -- -D warnings
 
-check: fmt test clippy build
+clippy-arm:
+	$(CARGO) clippy --target $(TARGET) --bin rm_robot -- -D warnings
+
+check: fmt test clippy clippy-arm build
 
 build:
 	cd /tmp && \

@@ -1,6 +1,20 @@
 //! DJI 电机 CAN 数据帧的纯编解码。
 
-use crate::domain::motor::MotorFeedback;
+use crate::{
+    config::{CHASSIS_FEEDBACK_IDS, PITCH_6020_FEEDBACK_ID, YAW_6623_FEEDBACK_ID},
+    domain::motor::MotorFeedback,
+};
+
+pub fn is_expected_motor_frame(bus: u8, id: u16, extended: bool, remote: bool, dlc: u8) -> bool {
+    if extended || remote || dlc != 8 {
+        return false;
+    }
+    match bus {
+        1 => CHASSIS_FEEDBACK_IDS.contains(&id),
+        2 => id == YAW_6623_FEEDBACK_ID || id == PITCH_6020_FEEDBACK_ID,
+        _ => false,
+    }
+}
 
 pub fn decode_standard_motor(previous: MotorFeedback, data: [u8; 8], now_ms: u32) -> MotorFeedback {
     MotorFeedback {
@@ -73,5 +87,16 @@ mod tests {
             encode_current_group([1, -2, 0x1234, -0x1234]),
             [0, 1, 0xff, 0xfe, 0x12, 0x34, 0xed, 0xcc]
         );
+    }
+
+    #[test]
+    fn 仅接受目标总线上的标准八字节数据帧() {
+        assert!(is_expected_motor_frame(1, 0x201, false, false, 8));
+        assert!(is_expected_motor_frame(2, 0x205, false, false, 8));
+        assert!(!is_expected_motor_frame(1, 0x205, false, false, 8));
+        assert!(!is_expected_motor_frame(2, 0x201, false, false, 8));
+        assert!(!is_expected_motor_frame(1, 0x201, true, false, 8));
+        assert!(!is_expected_motor_frame(1, 0x201, false, true, 8));
+        assert!(!is_expected_motor_frame(1, 0x201, false, false, 7));
     }
 }

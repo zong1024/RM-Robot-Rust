@@ -1,6 +1,6 @@
 //! 电机反馈领域模型。
 
-use crate::config::{CONTROL_PERIOD_S, ENCODER_COUNTS_PER_REV, TWO_PI};
+use crate::config::{ENCODER_COUNTS_PER_REV, TWO_PI};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MotorFeedback {
@@ -25,6 +25,7 @@ pub struct EncoderTracker {
     last_raw: u16,
     total_counts: i32,
     speed_rad_s: f32,
+    last_update_ms: u32,
 }
 
 impl EncoderTracker {
@@ -34,13 +35,24 @@ impl EncoderTracker {
             last_raw: 0,
             total_counts: 0,
             speed_rad_s: 0.0,
+            last_update_ms: 0,
         }
     }
 
     pub fn update(&mut self, raw: u16) {
+        let now_ms = if self.initialized {
+            self.last_update_ms.wrapping_add(1)
+        } else {
+            0
+        };
+        self.update_timed(raw, now_ms);
+    }
+
+    pub fn update_timed(&mut self, raw: u16, now_ms: u32) {
         if !self.initialized {
             self.initialized = true;
             self.last_raw = raw;
+            self.last_update_ms = now_ms;
             return;
         }
 
@@ -51,15 +63,25 @@ impl EncoderTracker {
             delta += 8192;
         }
         self.total_counts = self.total_counts.wrapping_add(delta);
-        self.speed_rad_s = delta as f32 * TWO_PI / ENCODER_COUNTS_PER_REV / CONTROL_PERIOD_S;
+        let elapsed_ms = now_ms.wrapping_sub(self.last_update_ms);
+        if elapsed_ms != 0 {
+            self.speed_rad_s =
+                delta as f32 * TWO_PI / ENCODER_COUNTS_PER_REV / (elapsed_ms as f32 * 0.001);
+        }
         self.last_raw = raw;
+        self.last_update_ms = now_ms;
     }
 
     /// 重新建立原始编码器基准，不把离线期间的位置变化误算成速度。
     pub fn resynchronize(&mut self, raw: u16) {
+        self.resynchronize_timed(raw, 0);
+    }
+
+    pub fn resynchronize_timed(&mut self, raw: u16, now_ms: u32) {
         self.initialized = true;
         self.last_raw = raw;
         self.speed_rad_s = 0.0;
+        self.last_update_ms = now_ms;
     }
 
     pub fn angle_rad(&self) -> f32 {
@@ -106,5 +128,14 @@ mod tests {
         assert_eq!(tracker.speed_rad_s(), 0.0);
         tracker.update(5010);
         assert!(tracker.angle_rad() > angle_before);
+    }
+
+    #[test]
+    fn 编码器测速使用真实反馈间隔() {
+        let mut tracker = EncoderTracker::new();
+        tracker.update_timed(1000, 10);
+        tracker.update_timed(1100, 12);
+        let expected = 100.0 * TWO_PI / ENCODER_COUNTS_PER_REV / 0.002;
+        assert!((tracker.speed_rad_s() - expected).abs() < 1e-3);
     }
 }

@@ -212,6 +212,11 @@ impl RemoteController {
     pub fn armed(&self) -> bool {
         self.armed
     }
+
+    pub fn force_disarm(&mut self) {
+        self.armed = false;
+        self.hold_started_at = None;
+    }
 }
 
 impl Default for RemoteController {
