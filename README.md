@@ -1,111 +1,184 @@
-# RM 完整小车 Rust 固件
+# RM Robot Rust
 
-面向 RoboMaster C 型开发板（STM32F407VGT6）的全 Rust `no_std` 整车框架。
-工程包含普通轮/麦克纳姆轮可切换底盘、双轴云台、FS-i6/FS-A8S 遥控、
-安全门和双模式里程计，并为 IMU、世界坐标系和后续状态估计预留稳定接口。
+[![Rust 固件持续集成](https://github.com/zong1024/RM-Robot-Rust/actions/workflows/ci.yml/badge.svg)](https://github.com/zong1024/RM-Robot-Rust/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## 当前硬件定义
+面向 RoboMaster C 型开发板（STM32F407VGT6）的全 Rust `no_std` 整车控制固件。
 
-### 底盘
+项目提供一套可测试、无堆分配的机器人控制框架，覆盖四轮底盘、双轴云台、
+FS-i6/FS-A8S 遥控、安全门与里程计，并为 IMU、世界坐标控制和状态估计保留清晰的扩展边界。
 
-底盘使用四个 M3508 + C620，CAN1 速率 1 Mbps，可安装普通轮或麦克纳姆轮：
+## 核心能力
 
-| 机械位置 | 电机 ID | 反馈 ID | 控制帧位置 |
-| --- | ---: | ---: | ---: |
+- 普通轮差速与麦克纳姆轮 X 型运动学，可通过遥控器切换。
+- 四台 M3508 独立速度环，以及目标转速、电流斜坡和总电流预算。
+- RoboMaster 6623 偏航轴与 GM6020 俯仰轴级联控制。
+- FS-i6 + FS-A8S S.BUS 解码、摇杆映射和长按解锁状态机。
+- 普通轮/麦克纳姆轮双模式里程计，可接入外部姿态 yaw。
+- CAN 精确过滤、反馈新鲜度检查、控制漏拍保护和独立看门狗。
+- 固定 1 kHz 控制循环；中断只处理定长通信数据。
+- 纯逻辑模块可在主机执行单元测试，固件由 CI 交叉编译到 Cortex-M4F。
+
+| 项目 | 配置 |
+| --- | --- |
+| MCU | STM32F407VGT6 |
+| 语言 | Rust 2021、`no_std` |
+| 目标 | `thumbv7em-none-eabihf` |
+| 底盘 | 4 × M3508 + C620 |
+| 云台 | RoboMaster 6623 + GM6020 |
+| 遥控 | FS-i6 + FS-A8S S.BUS |
+| 调度 | 1 kHz 固定周期主循环 |
+| 许可证 | MIT |
+
+## 安全设计
+
+> [!CAUTION]
+> 首次测试必须架空车轮和云台。仓库中的机械参数与 PID 只是保守起点，不能替代实车标定。
+
+固件按“失效时输出归零”设计：
+
+- 上电默认锁定；SwC 高档立即锁车。
+- SwC 中档且四个主摇杆居中持续 1 秒后解锁。
+- 遥控失联、S.BUS failsafe、丢帧或超过 `100 ms` 未收到有效帧时整车锁零。
+- 电机反馈超过 `20 ms` 未更新时，对应子系统清空 PID 并锁零。
+- 四台底盘电机必须全部在线，底盘才允许输出。
+- 控制循环间隔超过 `5 ms` 时整车锁零，并要求重新解锁。
+- 主循环卡死约 `500 ms` 后由独立看门狗复位。
+- CAN 只接收预期标准数据帧；扩展帧、远程帧、错误 DLC 和错误总线映射会被拒绝。
+
+云台默认处于未标定状态：
+
+```rust
+pub const GIMBAL_CALIBRATION: GimbalCalibration = GimbalCalibration {
+    calibrated: false,
+    pitch_encoder_zero: 0,
+    pitch_encoder_direction: 1.0,
+};
+```
+
+必须在 [`src/config/gimbal.rs`](src/config/gimbal.rs) 填写俯仰机械零点和方向，
+架空确认角度、方向与机械限位正确后，才能将 `calibrated` 改为 `true`。
+未标定时云台始终输出零电流，底盘仍可独立运行。
+
+## 硬件拓扑
+
+```text
+FS-i6 / FS-A8S
+      │ S.BUS, USART3 PC11, 100000 baud 8E2
+      ▼
+STM32F407VGT6 RoboMaster C 型开发板
+      ├── CAN1 1 Mbps ── 4 × C620 / M3508 底盘
+      └── CAN2 1 Mbps ── 6623 偏航 + GM6020 俯仰
+```
+
+### 底盘 CAN1
+
+| 机械位置 | 电机 ID | 反馈 ID | `0x200` 控制帧位置 |
+| --- | ---: | ---: | --- |
 | 左前 | 1 | `0x201` | `DATA[0..1]` |
 | 右前 | 2 | `0x202` | `DATA[2..3]` |
 | 左后 | 3 | `0x203` | `DATA[4..5]` |
 | 右后 | 4 | `0x204` | `DATA[6..7]` |
 
-四个电机由 `0x200` 群发控制。左右电机机械安装方向相反，默认方向配置为
-`[+1, -1, +1, -1]`，位于 `src/config/chassis.rs`。
+默认电机方向为 `[+1, -1, +1, -1]`，配置位于
+[`src/config/chassis.rs`](src/config/chassis.rs)。
 
-正式整车模式要求 ID1～4 四台 M3508 全部在线才允许底盘动作。
-`CHASSIS_MOTOR_ONLINE_MASK` 的 bit0～bit3 分别表示 ID1～ID4 在线状态。
+底盘默认功率保护：
 
-为避免四台同时启动造成电源母线压降，底盘包含三层功率保护：
+- 目标转速斜坡：`2000 RPM/s`
+- 单路电流斜坡：`20000/s`
+- 单路电流限幅：`6000`
+- 四路绝对电流总预算：`12000`
 
-- 目标转速按 `2000 RPM/s` 斜坡变化。
-- 每路电流命令按 `20000/s` 斜坡变化，单路限幅 `6000`。
-- 四路绝对电流之和限幅 `12000`，超限时按比例缩放。
-
-轮胎模式由 FS-i6 的两档 `SwB` 选择：
-
-| SwB 档位 | 模式 | 左摇杆竖直 | 左摇杆水平 |
-| --- | --- | --- | --- |
-| 上档 | 普通轮 | 前后 | 转向 |
-| 下档 | 麦克纳姆轮 | 前后 | 横移 |
-
-SwB 映射到 CH6（`channels[5]`）。模式切换时底盘会清空速度 PID，并输出
-一个控制周期的零电流。麦克纳姆轮按 X 型辊子方向安装；若横移方向错误，应先检查
-轮子安装位置，再检查 `src/chassis/kinematics.rs` 的横移符号。
-
-### 云台
-
-云台使用 CAN2，速率 1 Mbps：
+### 云台 CAN2
 
 | 轴 | 电机 | 反馈 ID | 控制 ID | 电流限幅 |
 | --- | --- | ---: | ---: | ---: |
 | 偏航 | RoboMaster 6623 | `0x205` | `0x1FF` | `±5000` |
 | 俯仰 | GM6020 | `0x206` | `0x1FF` | `±20000` |
 
-6623 的反馈格式与 GM6020 不同：它不直接返回转速，框架使用 8192 线绝对编码器
-差分并低通滤波估算偏航速度。协议实现位于
-`src/domain/can_protocol.rs`。
+6623 不直接返回转速。固件根据 8192 线绝对编码器和真实反馈时间间隔进行差分测速，
+再经过低通滤波输入速度环。6623 与 GM6020 使用不同的反馈解析逻辑，协议实现位于
+[`src/domain/can_protocol.rs`](src/domain/can_protocol.rs)。
 
-### 遥控器
+## 遥控映射
 
-沿用已经实机验证的 FS-i6 + FS-A8S S.BUS：
+S.BUS 接收使用 USART3 RX（PC11），配置为 `100000 baud, 8E2`。
 
-- USART3 RX：PC11
-- 100000 baud，8E2（STM32 配置为 9 位字长、偶校验、2 停止位）
-- 左摇杆竖直 CH3：底盘前后
-- 左摇杆水平 CH4：普通轮转向 / 麦克纳姆轮横移
-- 右摇杆水平 CH1：云台偏航
-- 右摇杆竖直 CH2：云台俯仰
-- 两档 SwB CH6：上档普通轮，下档麦克纳姆轮
-- 三档 SwC CH5：高档立即锁车；中档且四个主摇杆居中 1 秒后解锁
+| 输入 | 通道 | 普通轮模式 | 麦克纳姆轮模式 |
+| --- | --- | --- | --- |
+| 左摇杆竖直 | CH3 | 前后 | 前后 |
+| 左摇杆水平 | CH4 | 转向 | 横移 |
+| 右摇杆水平 | CH1 | 云台偏航 | 云台偏航 |
+| 右摇杆竖直 | CH2 | 云台俯仰 | 云台俯仰 |
+| SwB | CH6 | 上档选择普通轮 | 下档选择麦克纳姆轮 |
+| SwC | CH5 | 高档锁车 | 中档长按解锁 |
 
-遥控失联、S.BUS failsafe 或帧超时 100 ms 会立即让全部控制电流归零。
-底盘或云台电机反馈超过 20 ms 未更新也会使对应模块归零并清空 PID。
-控制循环间隔超过 5 ms 时会锁零并要求重新解锁；主循环卡死约 500 ms 后由独立看门狗复位。
-
-云台采用默认失效安全配置。首次装车必须在 `src/config/gimbal.rs` 填写俯仰机械零点和方向，
-架空验证无误后再将 `GIMBAL_CALIBRATION.calibrated` 改为 `true`。未标定时云台始终零电流，
-底盘仍可独立工作。
+切换 SwB 时，底盘清空四路速度 PID，并输出一个控制周期的零电流。
 
 ## 软件架构
 
 ```text
 src/
-├── chassis/       底盘子系统：双模式运动学与四路 M3508 速度环
-├── config/        CAN、底盘、云台、遥控和系统周期配置
-├── gimbal/        云台子系统：6623/GM6020 级联控制
-├── control/       底盘与云台共享的 PID 等基础算法
-├── domain/        电机反馈、CAN 协议、遥控数据、模块间命令
-├── estimation/    姿态接口、双模式里程计、世界坐标位姿
-├── app/           整车 1 kHz 编排，不直接访问硬件
-├── platform/      STM32 寄存器、CAN 中断、S.BUS 中断
-└── main.rs        时钟、引脚、中断入口、RGB 和周期调度
+├── app/           整车命令、安全状态与子系统编排
+├── chassis/       双模式运动学、四路 M3508 速度控制与功率限制
+├── config/        CAN、底盘、云台、遥控与系统参数
+├── control/       多个子系统共享的基础控制算法
+├── domain/        命令、反馈、CAN 协议与 S.BUS 解码
+├── estimation/    姿态接口、双模式里程计与二维位姿
+├── gimbal/        6623/GM6020 级联控制与机械标定
+├── platform/      STM32 CAN、USART 中断与独立看门狗
+└── main.rs        时钟、引脚、中断入口、RGB 与周期调度
 ```
 
-控制路径不使用堆分配。中断只收发定长数据，所有 PID 和状态估计在固定 1 kHz
-主循环执行，便于测量最坏执行时间，也便于后续迁移到 RTIC 或 Embassy。
+数据流：
 
-底盘和云台是顶层独立子系统。以后增加底盘运动学、功率限制时放入
-`src/chassis/`；增加云台世界坐标模式、自动瞄准和标定时放入
-`src/gimbal/`。只有确实被多个子系统复用的算法才放入 `src/control/`。
+```text
+USART3 / CAN 中断
+        │
+        ▼
+定长反馈快照
+        │
+        ▼
+RobotController（1 kHz）
+   ├── RemoteController
+   ├── ChassisController
+   ├── GimbalController
+   └── ChassisOdometry
+        │
+        ▼
+CAN1 0x200 / CAN2 0x1FF
+```
 
-详见 [架构说明](docs/ARCHITECTURE.md) 与
-[接线和调参](docs/HARDWARE_AND_TUNING.md)。基础功能完成范围、装车标定项和
-后续扩展边界见 [基础框架完成状态](docs/BASELINE_STATUS.md)。
+控制路径不使用堆分配。硬件访问集中在 `platform`，纯控制逻辑不依赖 STM32 PAC，
+因此可以在主机测试，也便于后续迁移到 RTIC 或 Embassy。
 
-## 构建
+## 快速开始
+
+### 环境
+
+- Rust `1.95.0`（由 `rust-toolchain.toml` 固定）
+- `thumbv7em-none-eabihf`
+- `gcc-arm-none-eabi`
+- 烧录时需要 OpenOCD 与 ST-Link
+
+### 检查与构建
 
 ```sh
+git clone https://github.com/zong1024/RM-Robot-Rust.git
+cd RM-Robot-Rust
+
 rustup target add thumbv7em-none-eabihf
 make check
 ```
+
+`make check` 依次执行：
+
+- `cargo fmt --check`
+- 主机单元测试
+- 主机库 Clippy（`-D warnings`）
+- ARM 固件 binary Clippy（`-D warnings`）
+- Cortex-M4F release 构建
 
 烧录：
 
@@ -113,39 +186,60 @@ make check
 make flash
 ```
 
-`make build` 特意从 `/tmp` 启动 Cargo，避免本仓库位于另一个 Rust 固件目录中时，
-父目录的 Cargo 配置被重复合并。独立 clone 后同样可用。
+`make build` 会从 `/tmp` 启动 Cargo，避免父目录中的 Cargo 配置被重复合并。
 
-GitHub Actions 会对每次推送执行格式检查、主机单元测试、Clippy 严格检查和
-Cortex-M4F 发布构建。
+## 首次装车
 
-## RGB 状态
+1. 架空车轮和云台，在无负载状态测试。
+2. 检查 CAN 总线两端终端电阻、供电和线序。
+3. 确认底盘 ID1～4 分别对应左前、右前、左后、右后。
+4. 确认 6623 拨码为 Yaw（反馈 `0x205`），GM6020 为 ID 2（反馈 `0x206`）。
+5. 校验 `CHASSIS_MOTOR_DIRECTION`，保证正向命令对应整车前进。
+6. 实测轮径、轮距、轴距和减速比，更新 `src/config/chassis.rs`。
+7. 填写俯仰编码器机械零点和方向，确认机械限位后启用 `GIMBAL_CALIBRATION`。
+8. 从低电流开始重新标定底盘与云台 PID。
 
-- 绿灯：500 ms 心跳，表示主循环运行。
-- 红灯：底盘或云台任一必需电机离线。
-- 蓝灯：遥控安全门已解锁。
+完整接线、排障和调参流程见
+[`docs/HARDWARE_AND_TUNING.md`](docs/HARDWARE_AND_TUNING.md)。
 
-RGB 为低电平点亮：PH12 红、PH11 绿、PH10 蓝。
+## 运行诊断
 
-通过 SWD 可查看 `SWB_CHANNEL_RAW` 和 `CHASSIS_WHEEL_MODE`：后者为 `0` 时是
-普通轮模式，为 `1` 时是麦克纳姆轮模式。
+RGB 为低电平点亮：
 
-安全诊断量包括 `CAN_INVALID_FRAME_COUNT`、`CAN_RX_BUDGET_EXHAUSTED_COUNT`、
-`CONTROL_TIMING_FAULT_COUNT` 和 `GIMBAL_CALIBRATED`。
+| 指示灯 | 引脚 | 含义 |
+| --- | --- | --- |
+| 红 | PH12 | 底盘或云台任一必需电机离线 |
+| 绿 | PH11 | 每 500 ms 翻转，表示主循环运行 |
+| 蓝 | PH10 | 遥控安全门已解锁 |
 
-## 首次装车必须确认
+可通过 SWD 查看以下诊断变量：
 
-1. 抬起车轮和云台，先在无负载状态测试。
-2. 检查四个底盘电机 ID 与机械位置。
-3. 检查 `CHASSIS_MOTOR_DIRECTION`，保证正向命令时四轮物理方向一致。
-4. 检查 6623 拨码为 Yaw（反馈 `0x205`），GM6020 为 ID 2（反馈 `0x206`）。
-5. 实测轮半径、轮距和减速比后更新 `src/config/chassis.rs`。
-6. 填写俯仰编码器机械零点和方向，架空确认后启用 `GIMBAL_CALIBRATION`。
-7. 重新标定底盘和云台 PID；仓库内参数只是保守起点。
-8. 根据实际机械限位修改俯仰最小/最大角。
+| 变量 | 含义 |
+| --- | --- |
+| `ROBOT_ARMED` | 整车安全门状态 |
+| `CHASSIS_MOTOR_ONLINE_MASK` | bit0～bit3 对应底盘 ID1～4 |
+| `SWB_CHANNEL_RAW` | SwB 原始通道值 |
+| `CHASSIS_WHEEL_MODE` | `0` 普通轮，`1` 麦克纳姆轮 |
+| `CAN1_ID_RX_COUNT` | 四个底盘反馈 ID 的接收计数 |
+| `CAN_INVALID_FRAME_COUNT` | 被协议校验拒绝的 CAN 帧数 |
+| `CAN_RX_BUDGET_EXHAUSTED_COUNT` | CAN 中断达到单次处理预算的次数 |
+| `CONTROL_TIMING_FAULT_COUNT` | 控制循环间隔超过 5 ms 的次数 |
+| `GIMBAL_CALIBRATED` | 云台是否已显式标定 |
+
+## 文档
+
+- [架构说明](docs/ARCHITECTURE.md)
+- [接线和调参](docs/HARDWARE_AND_TUNING.md)
+- [基础框架完成状态](docs/BASELINE_STATUS.md)
+- [控制安全加固设计](docs/SAFETY_HARDENING_DESIGN.md)
+- [AI 交接文档](AI_HANDOFF.md)
 
 ## 参考资料
 
 - [DJI RoboMaster 6623 电调说明书](https://rm-static.djicdn.com/tem/1f53d24dad94e151687436607599258.pdf)
 - [DJI RoboMaster 6623 电机产品页](https://www.robomaster.com/zh-CN/products/components/detail/131)
-- 本机 `Development-Board-C-Examples/20.standard_robot` 官方示例
+- RoboMaster C 型开发板官方示例：`Development-Board-C-Examples/20.standard_robot`
+
+## License
+
+本项目基于 [MIT License](LICENSE) 开源。
