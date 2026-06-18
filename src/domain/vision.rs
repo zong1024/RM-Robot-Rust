@@ -41,10 +41,6 @@ impl VisionFrameSummary {
     pub const fn has_rgb(&self) -> bool {
         self.flags & VISION_FLAG_RGB_VALID != 0
     }
-
-    pub fn is_fresh(&self, now_ms: u32, timeout_ms: u32) -> bool {
-        self.sequence != 0 && now_ms.wrapping_sub(self.captured_at_ms) <= timeout_ms
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
