@@ -6,9 +6,9 @@
 `src/domain/vision.rs`。它是 `no_std`、无堆分配、逐字节解析的二进制协议，可挂到
 任意后续确定的 UART、USB CDC、SPI 或 CAN 分片接收层。
 
-当前 SBC 侧原型项目位于 `/home/zongrui/Projects/orbbec_camera`，目标板为香橙派
-AI Pro 8T。该项目通过 OrbbecSDK v1 采集 DaBai DCW 深度帧，编码本文件描述的
-66 字节 frame summary 包，再经串口或 UDP 发给 C 板。
+当前 SBC 侧代码位于 `sbc/orange_pi_vision/`，目标板为香橙派 AI Pro 8T。该子项目
+通过 OrbbecSDK v1 采集 DaBai DCW 深度帧，编码本文件描述的 66 字节 frame summary
+包，再经串口或 UDP 发给 C 板。
 
 ## 设计取舍
 
@@ -71,5 +71,6 @@ if let Ok(Some(VisionPacket::FrameSummary(summary))) = parser.push(byte) {
 }
 ```
 
-当前 `RobotSensors` 和 `RobotOutput` 已包含 `vision: VisionFrameSummary`。在实际接线
-确定前，`main.rs` 暂时填入默认值，不影响现有底盘/云台控制。
+当前 `RobotSensors` 和 `RobotOutput` 已包含 `vision: VisionFrameSummary`。在 C 板
+平台层接入实际 UART/USB CDC/SPI/CAN 分片接收前，`main.rs` 暂时填入默认值，不影响
+现有底盘/云台控制。
