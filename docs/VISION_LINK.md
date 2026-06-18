@@ -6,6 +6,10 @@
 `src/domain/vision.rs`。它是 `no_std`、无堆分配、逐字节解析的二进制协议，可挂到
 任意后续确定的 UART、USB CDC、SPI 或 CAN 分片接收层。
 
+当前 SBC 侧原型项目位于 `/home/zongrui/Projects/orbbec_camera`，目标板为香橙派
+AI Pro 8T。该项目通过 OrbbecSDK v1 采集 DaBai DCW 深度帧，编码本文件描述的
+66 字节 frame summary 包，再经串口或 UDP 发给 C 板。
+
 ## 设计取舍
 
 DaBai DCW 当前可用的深度流是 `640x360@30fps`，单帧 16-bit 深度约 450 KiB；
