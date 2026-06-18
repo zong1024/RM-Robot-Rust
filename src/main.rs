@@ -9,6 +9,7 @@ use panic_halt as _;
 use rm_robot::{
     app::robot::{RobotController, RobotSensors},
     config::REMOTE_SWB_CHANNEL_INDEX,
+    domain::vision::VisionFrameSummary,
     estimation::attitude::Attitude,
 };
 use stm32f4xx_hal::{
@@ -117,6 +118,7 @@ fn main() -> ! {
             yaw_6623: can.yaw_6623,
             pitch_6020: can.pitch_6020,
             attitude: Attitude::default(),
+            vision: VisionFrameSummary::default(),
         };
         let output = robot.update(&sensors, now);
         platform::can::send_chassis(output.chassis.current);

@@ -8,6 +8,7 @@ use crate::{
     domain::{
         motor::MotorFeedback,
         remote::{RemoteController, RemoteData},
+        vision::VisionFrameSummary,
     },
     estimation::{
         attitude::Attitude,
@@ -23,6 +24,7 @@ pub struct RobotSensors {
     pub yaw_6623: MotorFeedback,
     pub pitch_6020: MotorFeedback,
     pub attitude: Attitude,
+    pub vision: VisionFrameSummary,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -30,6 +32,7 @@ pub struct RobotOutput {
     pub chassis: ChassisOutput,
     pub gimbal: GimbalOutput,
     pub odometry: OdometryState,
+    pub vision: VisionFrameSummary,
     pub armed: bool,
     pub timing_fault: bool,
 }
@@ -98,6 +101,7 @@ impl RobotController {
             chassis,
             gimbal,
             odometry,
+            vision: sensors.vision,
             armed: command.enabled,
             timing_fault,
         }
@@ -138,6 +142,7 @@ mod tests {
             yaw_6623: motor(1000, now_ms),
             pitch_6020: motor(1000, now_ms),
             attitude: Attitude::default(),
+            vision: VisionFrameSummary::default(),
         }
     }
 

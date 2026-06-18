@@ -1,0 +1,20 @@
+[package]
+name = "rm_orange_pi_vision"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Orange Pi AI Pro vision sender for RM-Robot-Rust"
+license = "MIT"
+
+[features]
+default = []
+orbbec-sdk = ["dep:ctrlc", "dep:serialport"]
+
+[dependencies]
+ctrlc = { version = "3.4", optional = true }
+serialport = { version = "4.6", optional = true }
+
+[[bin]]
+name = "send_camera_to_robot"
+path = "src/bin/send_camera_to_robot.rs"
+required-features = ["orbbec-sdk"]

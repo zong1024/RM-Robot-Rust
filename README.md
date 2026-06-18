@@ -3,10 +3,17 @@
 [![Rust 固件持续集成](https://github.com/zong1024/RM-Robot-Rust/actions/workflows/ci.yml/badge.svg)](https://github.com/zong1024/RM-Robot-Rust/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-面向 RoboMaster C 型开发板（STM32F407VGT6）的全 Rust `no_std` 整车控制固件。
+面向 RoboMaster C 型开发板（STM32F407VGT6）和 Linux SBC 的整车控制框架。
 
 项目提供一套可测试、无堆分配的机器人控制框架，覆盖四轮底盘、双轴云台、
-FS-i6/FS-A8S 遥控、安全门与里程计，并为 IMU、世界坐标控制和状态估计保留清晰的扩展边界。
+FS-i6/FS-A8S 遥控、安全门与里程计，并为 IMU、Linux SBC 视觉链路、
+世界坐标控制和状态估计保留清晰的扩展边界。
+
+当前架构按“大脑/小脑”拆分：
+
+- 香橙派 AI Pro 8T 作为“大脑”，接入 Orbbec DaBai DCW 深度相机，后续负责感知、
+  自动驾驶和高层决策。
+- STM32F407 C 板作为“小脑”，负责 1 kHz 底盘/云台实时控制、遥控安全门和电机输出。
 
 ## 核心能力
 
@@ -15,6 +22,8 @@ FS-i6/FS-A8S 遥控、安全门与里程计，并为 IMU、世界坐标控制和
 - RoboMaster 6623 偏航轴与 GM6020 俯仰轴级联控制。
 - FS-i6 + FS-A8S S.BUS 解码、摇杆映射和长按解锁状态机。
 - 普通轮/麦克纳姆轮双模式里程计，可接入外部姿态 yaw。
+- Linux SBC 到 C 板的 RGB-D 视觉摘要协议解析与整车状态透传。
+- `sbc/orange_pi_vision/` 提供 Orange Pi AI Pro 8T 视觉发送端框架。
 - CAN 精确过滤、反馈新鲜度检查、控制漏拍保护和独立看门狗。
 - 固定 1 kHz 控制循环；中断只处理定长通信数据。
 - 纯逻辑模块可在主机执行单元测试，固件由 CI 交叉编译到 Cortex-M4F。
@@ -27,6 +36,8 @@ FS-i6/FS-A8S 遥控、安全门与里程计，并为 IMU、世界坐标控制和
 | 底盘 | 4 × M3508 + C620 |
 | 云台 | RoboMaster 6623 + GM6020 |
 | 遥控 | FS-i6 + FS-A8S S.BUS |
+| SBC | 香橙派 AI Pro 8T |
+| 深度相机 | Orbbec DaBai DCW |
 | 调度 | 1 kHz 固定周期主循环 |
 | 许可证 | MIT |
 
@@ -63,12 +74,12 @@ pub const GIMBAL_CALIBRATION: GimbalCalibration = GimbalCalibration {
 ## 硬件拓扑
 
 ```text
-FS-i6 / FS-A8S
-      │ S.BUS, USART3 PC11, 100000 baud 8E2
-      ▼
-STM32F407VGT6 RoboMaster C 型开发板
-      ├── CAN1 1 Mbps ── 4 × C620 / M3508 底盘
-      └── CAN2 1 Mbps ── 6623 偏航 + GM6020 俯仰
+Orbbec DaBai DCW ── USB ── Orange Pi AI Pro 8T
+                                │ frame summary, UART/UDP/SPI 等链路
+                                ▼
+FS-i6 / FS-A8S ── S.BUS ── STM32F407VGT6 RoboMaster C 型开发板
+                                ├── CAN1 1 Mbps ── 4 × C620 / M3508 底盘
+                                └── CAN2 1 Mbps ── 6623 偏航 + GM6020 俯仰
 ```
 
 ### 底盘 CAN1
@@ -129,6 +140,11 @@ src/
 ├── gimbal/        6623/GM6020 级联控制与机械标定
 ├── platform/      STM32 CAN、USART 中断与独立看门狗
 └── main.rs        时钟、引脚、中断入口、RGB 与周期调度
+
+sbc/
+└── orange_pi_vision/
+    ├── src/vision_link.rs                 SBC 侧视觉摘要包编码
+    └── src/bin/send_camera_to_robot.rs    DaBai DCW 到 C 板的发送器
 ```
 
 数据流：
@@ -152,6 +168,11 @@ CAN1 0x200 / CAN2 0x1FF
 
 控制路径不使用堆分配。硬件访问集中在 `platform`，纯控制逻辑不依赖 STM32 PAC，
 因此可以在主机测试，也便于后续迁移到 RTIC 或 Embassy。
+
+详见 [架构说明](docs/ARCHITECTURE.md) 与
+[接线和调参](docs/HARDWARE_AND_TUNING.md)。Linux SBC 到 C 板的视觉数据协议见
+[相机数据链路](docs/VISION_LINK.md)。基础功能完成范围、装车标定项和
+后续扩展边界见 [基础框架完成状态](docs/BASELINE_STATUS.md)。
 
 ## 快速开始
 
@@ -179,6 +200,7 @@ make check
 - 主机库 Clippy（`-D warnings`）
 - ARM 固件 binary Clippy（`-D warnings`）
 - Cortex-M4F release 构建
+- Orange Pi 视觉协议子项目测试和 Clippy
 
 烧录：
 
@@ -187,6 +209,37 @@ make flash
 ```
 
 `make build` 会从 `/tmp` 启动 Cargo，避免父目录中的 Cargo 配置被重复合并。
+
+### Orange Pi AI Pro 8T 视觉发送器
+
+协议库不需要 Orbbec SDK，可直接测试：
+
+```sh
+cargo test --manifest-path sbc/orange_pi_vision/Cargo.toml
+```
+
+在香橙派 AI Pro 8T 上实际采集 DaBai DCW，需要安装 aarch64 OrbbecSDK v1 并启用
+`orbbec-sdk` feature：
+
+```sh
+export ORBBEC_SDK_V1_DIR=/opt/OrbbecSDK_v1.10.18/SDK
+export LD_LIBRARY_PATH="$ORBBEC_SDK_V1_DIR/lib:$LD_LIBRARY_PATH"
+
+cargo build --release \
+  --manifest-path sbc/orange_pi_vision/Cargo.toml \
+  --features orbbec-sdk \
+  --bin send_camera_to_robot
+```
+
+运行示例：
+
+```sh
+sbc/orange_pi_vision/target/release/send_camera_to_robot \
+  --serial /dev/ttyUSB0 \
+  --baud 921600 \
+  --rate-hz 10 \
+  --rgb-size 640x480
+```
 
 ## 首次装车
 
