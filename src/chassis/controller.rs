@@ -4,8 +4,7 @@ use crate::{
     chassis::kinematics::wheel_mix,
     config::{
         CHASSIS_CURRENT_SLEW_PER_S, CHASSIS_MAX_CURRENT, CHASSIS_MAX_RPM, CHASSIS_MOTOR_DIRECTION,
-        CHASSIS_TARGET_RPM_SLEW_PER_S, CHASSIS_TOTAL_CURRENT_LIMIT, CONTROL_PERIOD_S,
-        DEVICE_TIMEOUT_MS,
+        CHASSIS_TARGET_RPM_SLEW_PER_S, CHASSIS_TOTAL_CURRENT_LIMIT, MOTOR_FEEDBACK_TIMEOUT_MS,
     },
     control::pid::{clamp, Pid},
     domain::{
@@ -48,12 +47,13 @@ impl ChassisController {
         feedback: &[MotorFeedback; 4],
         enabled: bool,
         now_ms: u32,
+        dt_s: f32,
     ) -> ChassisOutput {
         let online_mask = feedback
             .iter()
             .enumerate()
             .fold(0u8, |mask, (index, motor)| {
-                if motor.is_fresh(now_ms, DEVICE_TIMEOUT_MS) {
+                if motor.is_fresh(now_ms, MOTOR_FEEDBACK_TIMEOUT_MS) {
                     mask | (1 << index)
                 } else {
                     mask
@@ -95,18 +95,18 @@ impl ChassisController {
             self.ramped_target_rpm[index] = slew(
                 self.ramped_target_rpm[index],
                 requested_target,
-                CHASSIS_TARGET_RPM_SLEW_PER_S * CONTROL_PERIOD_S,
+                CHASSIS_TARGET_RPM_SLEW_PER_S * dt_s,
             );
             output.target_rpm[index] = self.ramped_target_rpm[index];
             let requested_current = self.speed_pid[index].step(
                 self.ramped_target_rpm[index],
                 feedback[index].speed_rpm as f32,
-                CONTROL_PERIOD_S,
+                dt_s,
             );
             self.ramped_current[index] = slew(
                 self.ramped_current[index],
                 clamp(requested_current, -CHASSIS_MAX_CURRENT, CHASSIS_MAX_CURRENT),
-                CHASSIS_CURRENT_SLEW_PER_S * CONTROL_PERIOD_S,
+                CHASSIS_CURRENT_SLEW_PER_S * dt_s,
             );
         }
         apply_total_current_limit(&mut self.ramped_current);
@@ -175,6 +175,7 @@ mod tests {
             &feedback,
             true,
             10,
+            0.001,
         );
         assert_eq!(output.current, [0; 4]);
         assert_eq!(output.wheel_mode, WheelMode::Mecanum);
@@ -201,9 +202,27 @@ mod tests {
             &feedback,
             true,
             10,
+            0.001,
         );
         assert!(!output.online);
         assert_eq!(output.online_mask, 0b0111);
+        assert_eq!(output.current, [0; 4]);
+    }
+
+    #[test]
+    fn 电机反馈超过二十毫秒立即离线() {
+        let mut controller = ChassisController::new();
+        let output = controller.update(
+            ChassisCommand {
+                forward: 0.5,
+                ..ChassisCommand::default()
+            },
+            &[fresh(); 4],
+            true,
+            31,
+            0.001,
+        );
+        assert!(!output.online);
         assert_eq!(output.current, [0; 4]);
     }
 
@@ -219,6 +238,7 @@ mod tests {
             &feedback,
             true,
             10,
+            0.001,
         );
         let second = controller.update(
             ChassisCommand {
@@ -228,6 +248,7 @@ mod tests {
             &feedback,
             true,
             11,
+            0.001,
         );
         assert!(first.online);
         assert_eq!(first.online_mask, 0b1111);
@@ -260,6 +281,7 @@ mod tests {
             &feedback,
             true,
             10,
+            0.001,
         );
         let offline = controller.update(
             ChassisCommand {
@@ -269,6 +291,7 @@ mod tests {
             &[MotorFeedback::default(); 4],
             true,
             1000,
+            0.001,
         );
         assert_eq!(offline.current, [0; 4]);
         assert_eq!(controller.ramped_target_rpm, [0.0; 4]);

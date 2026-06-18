@@ -36,6 +36,10 @@ pub static CHASSIS_WHEEL_MODE: AtomicU8 = AtomicU8::new(0);
 pub static SWB_CHANNEL_RAW: AtomicI16 = AtomicI16::new(0);
 #[no_mangle]
 pub static CONTROL_LOOP_COUNT: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static CONTROL_TIMING_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static GIMBAL_CALIBRATED: AtomicU8 = AtomicU8::new(0);
 
 pub fn now_ms() -> u32 {
     TICK_MS.load(Ordering::Relaxed)
@@ -79,6 +83,7 @@ fn main() -> ! {
     init_usart3();
     platform::can::init();
     platform::sbus::init();
+    let watchdog = platform::watchdog::Watchdog::start();
 
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::CAN1_RX0);
@@ -123,12 +128,16 @@ fn main() -> ! {
         CHASSIS_ONLINE.store(output.chassis.online as u8, Ordering::Relaxed);
         CHASSIS_MOTOR_ONLINE_MASK.store(output.chassis.online_mask, Ordering::Relaxed);
         GIMBAL_ONLINE.store(output.gimbal.online as u8, Ordering::Relaxed);
+        GIMBAL_CALIBRATED.store(output.gimbal.calibrated as u8, Ordering::Relaxed);
         CHASSIS_WHEEL_MODE.store(output.chassis.wheel_mode as u8, Ordering::Relaxed);
         SWB_CHANNEL_RAW.store(
             sensors.remote.channels[REMOTE_SWB_CHANNEL_INDEX],
             Ordering::Relaxed,
         );
         CONTROL_LOOP_COUNT.fetch_add(1, Ordering::Relaxed);
+        if output.timing_fault {
+            CONTROL_TIMING_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
 
         if now.wrapping_sub(last_green_toggle) >= 500 {
             last_green_toggle = now;
@@ -151,6 +160,7 @@ fn main() -> ! {
         } else {
             led_b.set_high();
         }
+        watchdog.feed();
     }
 }
 

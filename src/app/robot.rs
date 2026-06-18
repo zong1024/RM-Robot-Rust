@@ -4,7 +4,7 @@
 
 use crate::{
     chassis::{ChassisController, ChassisOutput},
-    config::CONTROL_PERIOD_S,
+    config::{GimbalCalibration, CONTROL_PERIOD_MS, GIMBAL_CALIBRATION, MAX_CONTROL_GAP_MS},
     domain::{
         motor::MotorFeedback,
         remote::{RemoteController, RemoteData},
@@ -34,6 +34,7 @@ pub struct RobotOutput {
     pub odometry: OdometryState,
     pub vision: VisionFrameSummary,
     pub armed: bool,
+    pub timing_fault: bool,
 }
 
 pub struct RobotController {
@@ -41,36 +42,58 @@ pub struct RobotController {
     chassis: ChassisController,
     gimbal: GimbalController,
     odometry: ChassisOdometry,
+    last_update_ms: Option<u32>,
 }
 
 impl RobotController {
     pub const fn new() -> Self {
+        Self::with_gimbal_calibration(GIMBAL_CALIBRATION)
+    }
+
+    pub const fn with_gimbal_calibration(calibration: GimbalCalibration) -> Self {
         Self {
             remote: RemoteController::new(),
             chassis: ChassisController::new(),
-            gimbal: GimbalController::new(),
+            gimbal: GimbalController::with_calibration(calibration),
             odometry: ChassisOdometry::new(),
+            last_update_ms: None,
         }
     }
 
     pub fn update(&mut self, sensors: &RobotSensors, now_ms: u32) -> RobotOutput {
-        let command = self.remote.update(&sensors.remote, now_ms);
-        let chassis =
-            self.chassis
-                .update(command.chassis, &sensors.chassis, command.enabled, now_ms);
+        let previous_update_ms = self.last_update_ms;
+        let elapsed_ms = previous_update_ms
+            .map(|last| now_ms.wrapping_sub(last))
+            .unwrap_or(CONTROL_PERIOD_MS);
+        self.last_update_ms = Some(now_ms);
+        let mut command = self.remote.update(&sensors.remote, now_ms);
+        let timing_fault = previous_update_ms.is_some() && elapsed_ms > MAX_CONTROL_GAP_MS;
+        if timing_fault {
+            self.remote.force_disarm();
+            command.enabled = false;
+        }
+        let dt_s = elapsed_ms.max(1) as f32 * 0.001;
+        let chassis = self.chassis.update(
+            command.chassis,
+            &sensors.chassis,
+            command.enabled,
+            now_ms,
+            dt_s,
+        );
         let gimbal = self.gimbal.update(
             command.gimbal,
             sensors.yaw_6623,
             sensors.pitch_6020,
             command.enabled,
             now_ms,
+            dt_s,
         );
         let external_yaw = sensors.attitude.valid.then_some(sensors.attitude.yaw_rad);
         let odometry = self.odometry.update(
             &sensors.chassis,
             command.chassis.wheel_mode,
-            chassis.online,
-            CONTROL_PERIOD_S,
+            chassis.online && !timing_fault,
+            dt_s,
             external_yaw,
         );
 
@@ -80,6 +103,7 @@ impl RobotController {
             odometry,
             vision: sensors.vision,
             armed: command.enabled,
+            timing_fault,
         }
     }
 }
@@ -94,7 +118,7 @@ impl Default for RobotController {
 mod tests {
     use super::*;
     use crate::{
-        config::{ARM_HOLD_MS, REMOTE_CHANNEL_LIMIT},
+        config::{GimbalCalibration, ARM_HOLD_MS, REMOTE_CHANNEL_LIMIT},
         domain::{command::WheelMode, remote::Switch},
     };
 
@@ -123,11 +147,12 @@ mod tests {
     }
 
     fn arm(robot: &mut RobotController, sensors: &mut RobotSensors) {
-        sensors.remote.last_frame_ms = 0;
-        robot.update(sensors, 0);
-        refresh_feedback(sensors, ARM_HOLD_MS);
-        sensors.remote.last_frame_ms = ARM_HOLD_MS;
-        let output = robot.update(sensors, ARM_HOLD_MS);
+        let mut output = RobotOutput::default();
+        for now_ms in 0..=ARM_HOLD_MS {
+            sensors.remote.last_frame_ms = now_ms;
+            refresh_feedback(sensors, now_ms);
+            output = robot.update(sensors, now_ms);
+        }
         assert!(output.armed);
     }
 
@@ -144,7 +169,7 @@ mod tests {
 
     #[test]
     fn 解锁后底盘和云台命令贯穿整车编排() {
-        let mut robot = RobotController::new();
+        let mut robot = calibrated_robot();
         let mut sensors = ready_sensors(0);
         arm(&mut robot, &mut sensors);
 
@@ -164,7 +189,7 @@ mod tests {
 
     #[test]
     fn 云台离线只关闭云台而不影响在线底盘() {
-        let mut robot = RobotController::new();
+        let mut robot = calibrated_robot();
         let mut sensors = ready_sensors(0);
         arm(&mut robot, &mut sensors);
 
@@ -186,7 +211,7 @@ mod tests {
 
     #[test]
     fn 底盘离线只关闭底盘而不影响在线云台() {
-        let mut robot = RobotController::new();
+        let mut robot = calibrated_robot();
         let mut sensors = ready_sensors(0);
         arm(&mut robot, &mut sensors);
 
@@ -245,5 +270,31 @@ mod tests {
         assert!(output.chassis.target_rpm[1] > 0.0);
         assert!(output.chassis.target_rpm[2] < 0.0);
         assert!(output.chassis.target_rpm[3] < 0.0);
+    }
+
+    fn calibrated_robot() -> RobotController {
+        RobotController::with_gimbal_calibration(GimbalCalibration {
+            calibrated: true,
+            pitch_encoder_zero: 1000,
+            pitch_encoder_direction: 1.0,
+        })
+    }
+
+    #[test]
+    fn 控制循环严重漏拍时本周期锁零() {
+        let mut robot = RobotController::new();
+        let mut sensors = ready_sensors(0);
+        arm(&mut robot, &mut sensors);
+
+        let now = ARM_HOLD_MS + 20;
+        sensors.remote.last_frame_ms = now;
+        sensors.remote.channels[2] = REMOTE_CHANNEL_LIMIT;
+        refresh_feedback(&mut sensors, now);
+        let output = robot.update(&sensors, now);
+
+        assert!(output.timing_fault);
+        assert_eq!(output.chassis.current, [0; 4]);
+        assert_eq!(output.gimbal.yaw_current, 0);
+        assert_eq!(output.gimbal.pitch_current, 0);
     }
 }
