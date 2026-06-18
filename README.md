@@ -2,7 +2,7 @@
 
 面向 RoboMaster C 型开发板（STM32F407VGT6）的全 Rust `no_std` 整车框架。
 工程包含普通轮/麦克纳姆轮可切换底盘、双轴云台、FS-i6/FS-A8S 遥控、
-安全门和双模式里程计，并为 IMU、世界坐标系和后续状态估计预留稳定接口。
+安全门和双模式里程计，并为 IMU、世界坐标系、Linux SBC 视觉链路和后续状态估计预留稳定接口。
 
 ## 当前硬件定义
 
@@ -92,7 +92,8 @@ src/
 `src/gimbal/`。只有确实被多个子系统复用的算法才放入 `src/control/`。
 
 详见 [架构说明](docs/ARCHITECTURE.md) 与
-[接线和调参](docs/HARDWARE_AND_TUNING.md)。基础功能完成范围、装车标定项和
+[接线和调参](docs/HARDWARE_AND_TUNING.md)。Linux SBC 到 C 板的视觉数据协议见
+[相机数据链路](docs/VISION_LINK.md)。基础功能完成范围、装车标定项和
 后续扩展边界见 [基础框架完成状态](docs/BASELINE_STATUS.md)。
 
 ## 构建
