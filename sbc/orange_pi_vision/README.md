@@ -35,6 +35,7 @@ export LD_LIBRARY_PATH="$ORBBEC_SDK_V1_DIR/lib:$LD_LIBRARY_PATH"
 
 cargo build --release \
   --manifest-path sbc/orange_pi_vision/Cargo.toml \
+  --target aarch64-unknown-linux-gnu \
   --features orbbec-sdk \
   --bin send_camera_to_robot
 ```
@@ -46,7 +47,7 @@ cargo build --release \
 串口发送给 C 板：
 
 ```sh
-target/release/send_camera_to_robot \
+sbc/orange_pi_vision/target/aarch64-unknown-linux-gnu/release/send_camera_to_robot \
   --serial /dev/ttyUSB0 \
   --baud 921600 \
   --rate-hz 10 \
@@ -56,7 +57,7 @@ target/release/send_camera_to_robot \
 UDP 调试：
 
 ```sh
-target/release/send_camera_to_robot \
+sbc/orange_pi_vision/target/aarch64-unknown-linux-gnu/release/send_camera_to_robot \
   --udp 192.168.1.20:5000 \
   --rate-hz 10 \
   --rgb-size 640x480
