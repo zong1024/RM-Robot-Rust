@@ -1,0 +1,17 @@
+[Unit]
+Description=RM Robot Orange Pi vision sender
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rm_robot_rust/sbc/orange_pi_vision
+Environment=VISION_ENV_FILE=/home/ubuntu/rm_robot_rust/sbc/orange_pi_vision/vision_sender.env
+ExecStart=/home/ubuntu/rm_robot_rust/sbc/orange_pi_vision/scripts/run_camera_sender.sh
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

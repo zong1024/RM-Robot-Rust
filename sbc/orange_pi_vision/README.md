@@ -35,6 +35,7 @@ export LD_LIBRARY_PATH="$ORBBEC_SDK_V1_DIR/lib:$LD_LIBRARY_PATH"
 
 cargo build --release \
   --manifest-path sbc/orange_pi_vision/Cargo.toml \
+  --target aarch64-unknown-linux-gnu \
   --features orbbec-sdk \
   --bin send_camera_to_robot
 ```
@@ -46,7 +47,7 @@ cargo build --release \
 串口发送给 C 板：
 
 ```sh
-target/release/send_camera_to_robot \
+sbc/orange_pi_vision/target/aarch64-unknown-linux-gnu/release/send_camera_to_robot \
   --serial /dev/ttyUSB0 \
   --baud 921600 \
   --rate-hz 10 \
@@ -56,13 +57,42 @@ target/release/send_camera_to_robot \
 UDP 调试：
 
 ```sh
-target/release/send_camera_to_robot \
+sbc/orange_pi_vision/target/aarch64-unknown-linux-gnu/release/send_camera_to_robot \
   --udp 192.168.1.20:5000 \
   --rate-hz 10 \
   --rgb-size 640x480
 ```
 
 不传 `--serial` 或 `--udp` 时，程序会把二进制包写到 stdout，便于管道测试。
+
+## systemd 部署
+
+仓库提供运行脚本和服务模板：
+
+- `scripts/run_camera_sender.sh`
+- `vision_sender.env.example`
+- `systemd/rm-vision-sender.service`
+
+部署到树莓派或香橙派后：
+
+```sh
+cd ~/rm_robot_rust/sbc/orange_pi_vision
+cp vision_sender.env.example vision_sender.env
+vim vision_sender.env
+
+sudo cp systemd/rm-vision-sender.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start rm-vision-sender.service
+sudo journalctl -u rm-vision-sender.service -f
+```
+
+确认 C 板串口接线和设备节点后，再设置开机自启：
+
+```sh
+sudo systemctl enable rm-vision-sender.service
+```
+
+默认环境文件使用 `/dev/ttyAMA0` 和 `921600` baud。未确认串口前不要启用开机自启。
 
 ## 硬件检查
 
