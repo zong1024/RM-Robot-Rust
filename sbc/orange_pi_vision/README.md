@@ -64,6 +64,35 @@ target/release/send_camera_to_robot \
 
 不传 `--serial` 或 `--udp` 时，程序会把二进制包写到 stdout，便于管道测试。
 
+## systemd 部署
+
+仓库提供运行脚本和服务模板：
+
+- `scripts/run_camera_sender.sh`
+- `vision_sender.env.example`
+- `systemd/rm-vision-sender.service`
+
+部署到树莓派或香橙派后：
+
+```sh
+cd ~/rm_robot_rust/sbc/orange_pi_vision
+cp vision_sender.env.example vision_sender.env
+vim vision_sender.env
+
+sudo cp systemd/rm-vision-sender.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start rm-vision-sender.service
+sudo journalctl -u rm-vision-sender.service -f
+```
+
+确认 C 板串口接线和设备节点后，再设置开机自启：
+
+```sh
+sudo systemctl enable rm-vision-sender.service
+```
+
+默认环境文件使用 `/dev/ttyAMA0` 和 `921600` baud。未确认串口前不要启用开机自启。
+
 ## 硬件检查
 
 ```sh
